@@ -54,6 +54,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
   checkBtn.addEventListener('click', checkForUpdates);
 
+  document.getElementById('repoBtn').addEventListener('click', function() {
+    chrome.tabs.create({ url: `https://github.com/${getRepo()}` });
+  });
+
   function autoCheckForUpdates() {
     chrome.storage.local.get(['lastVersionCheck'], function(result) {
       const last = result.lastVersionCheck || 0;
@@ -74,7 +78,7 @@ document.addEventListener('DOMContentLoaded', function() {
     updateStatusDiv.textContent = 'Проверяем обновления...';
     updateStatusDiv.className = '';
 
-    fetch(`https://raw.githubusercontent.com/${repo}/${GITHUB_BRANCH}/version.txt`)
+    fetch(`https://raw.githubusercontent.com/${repo}/${GITHUB_BRANCH}/version.txt?t=${Date.now()}`)
       .then(response => {
         if (!response.ok) throw new Error('Репозиторий не найден');
         return response.text();
@@ -111,7 +115,7 @@ document.addEventListener('DOMContentLoaded', function() {
       updateStatusDiv.textContent = '✅ У вас актуальная версия';
     } else {
       updateStatusDiv.className = 'status-ok';
-      updateStatusDiv.textContent = `✅ Версия ${latest} — новее, чем на GitHub`;
+      updateStatusDiv.textContent = `✅ Ваша версия (${currentVersion}) новее, чем на GitHub (${latest})`;
     }
   }
 
