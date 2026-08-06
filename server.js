@@ -66,7 +66,7 @@ function endPoll() {
     
     for (let [clientId, vote] of Object.entries(activePoll.votes)) {
         const client = clients.find(c => c.id === clientId);
-        const name = client ? client.name : clientId.substr(0, 8);
+        const name = client ? client.name : clientId.slice(0, 8);
         if (vote === 'yes') {
             yesVoters.push(name);
         } else {

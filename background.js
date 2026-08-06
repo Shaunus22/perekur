@@ -6,11 +6,19 @@ let SERVER_URL = '';
 let clientId = null;
 let currentName = null;
 let activeWindowId = null;
-let isPollShown = false;
-let currentPollId = null;
-let amISender = false;
-let resultsShown = false; // Флаг - показаны ли уже результаты
-let lastResultsId = null; // ID последних показанных результатов
+
+// Состояние хранится в chrome.storage.local, чтобы не теряться
+// при «засыпании» service worker'а (MV3). Иначе после перезапуска
+// закрытые окна опроса/результатов открывались бы снова.
+let state = {
+  currentPollId: null,
+  lastResultsId: null,
+  resultsShown: false
+};
+
+function saveState() {
+  chrome.storage.local.set(state);
+}
 
 // ============================================
 // 1. Получение ID клиента
@@ -71,10 +79,11 @@ function checkPoll() {
   .then(data => {
     // Нет опроса
     if (!data.poll) {
-      if (activeWindowId && !resultsShown) closeWindow();
-      isPollShown = false;
-      currentPollId = null;
-      amISender = false;
+      if (activeWindowId && !state.resultsShown) closeWindow();
+      if (state.currentPollId) {
+        state.currentPollId = null;
+        saveState();
+      }
       return;
     }
     
@@ -83,30 +92,32 @@ function checkPoll() {
     // Если это наш опрос (мы отправитель)
     if (poll.senderId === clientId) {
       console.log('📝 Мы отправитель, ждем результаты...');
-      amISender = true;
-      if (activeWindowId && !resultsShown) closeWindow();
-      isPollShown = false;
-      currentPollId = null;
+      if (activeWindowId && !state.resultsShown) closeWindow();
+      if (state.currentPollId) {
+        state.currentPollId = null;
+        saveState();
+      }
       return;
     }
     
     // Если уже голосовали
     if (poll.hasVoted) {
-      if (activeWindowId && !resultsShown) closeWindow();
-      isPollShown = false;
-      currentPollId = null;
+      if (activeWindowId && !state.resultsShown) closeWindow();
+      if (state.currentPollId) {
+        state.currentPollId = null;
+        saveState();
+      }
       return;
     }
     
     // Если это тот же опрос и уже был показан (или закрыт) - НЕ открываем повторно
-    if (currentPollId === poll.id) {
+    if (state.currentPollId === poll.id) {
       return;
     }
     
     // Показываем опрос
-    isPollShown = true;
-    currentPollId = poll.id;
-    amISender = false;
+    state.currentPollId = poll.id;
+    saveState();
     showPoll(poll);
   })
   .catch(() => {});
@@ -128,16 +139,17 @@ function checkResults() {
   .then(data => {
     if (data.results) {
       // Проверяем, не показывали ли уже эти результаты
-      const resultsId = data.results.timestamp || data.results.total || Date.now();
+      const resultsId = data.results.resultsId || data.results.timestamp || Date.now();
       
-      if (resultsShown && lastResultsId === resultsId) {
+      if (state.resultsShown && state.lastResultsId === resultsId) {
         console.log('⏭️ Результаты уже показаны, пропускаем');
         return;
       }
       
       console.log('📊 Получены новые результаты!');
-      resultsShown = true;
-      lastResultsId = resultsId;
+      state.resultsShown = true;
+      state.lastResultsId = resultsId;
+      saveState();
       
       // Показываем результаты
       showResults(data.results, data.poll);
@@ -169,17 +181,8 @@ function showPoll(poll) {
     if (win) {
       activeWindowId = win.id;
       console.log('✅ Окно опроса открыто (ID:', poll.id, ')');
-      
-      // Авто-закрытие через 60 секунд. currentPollId сохраняем,
-      // чтобы повторно не открывать одно и то же окно.
-      setTimeout(() => {
-        if (activeWindowId) {
-          chrome.windows.remove(activeWindowId, () => {
-            activeWindowId = null;
-            isPollShown = false;
-          });
-        }
-      }, 60000);
+      // Авто-закрытие окна выполняется в самой странице (notification.js).
+      // currentPollId сохранен в storage — окно повторно не откроется.
     }
   });
 }
@@ -188,16 +191,16 @@ function showPoll(poll) {
 // 6. Показ результатов
 // ============================================
 function showResults(results, poll) {
-  // Закрываем старое окно если оно есть и это не окно с опросом
+  // Закрываем старое окно если оно есть
   if (activeWindowId) {
     chrome.windows.remove(activeWindowId, () => {
       activeWindowId = null;
     });
   }
   
-  // Сбрасываем флаги опроса
-  isPollShown = false;
-  currentPollId = null;
+  // Сбрасываем флаг опроса — опрос завершен
+  state.currentPollId = null;
+  saveState();
   
   // Определяем, кто мы: отправитель или проголосовавший
   let userVote = null;
@@ -227,16 +230,9 @@ function showResults(results, poll) {
     if (win) {
       activeWindowId = win.id;
       console.log('✅ Окно результатов открыто');
-      
-      // Авто-закрытие через 30 секунд.
-      // Флаг resultsShown не сбрасываем, чтобы не показывать результаты повторно.
-      setTimeout(() => {
-        if (activeWindowId) {
-          chrome.windows.remove(activeWindowId, () => {
-            activeWindowId = null;
-          });
-        }
-      }, 30000);
+      // Авто-закрытие окна выполняется в самой странице (results.js).
+      // resultsShown/lastResultsId сохранены в storage — результаты
+      // не будут показаны повторно, даже после «засыпания» worker'а.
     }
   });
 }
@@ -248,21 +244,18 @@ function closeWindow() {
   if (activeWindowId) {
     chrome.windows.remove(activeWindowId, () => {
       activeWindowId = null;
-      isPollShown = false;
-      amISender = false;
     });
   }
 }
 
 // ============================================
-// 8. Сброс флагов при завершении опроса
+// 8. Сброс состояния при новом опросе
 // ============================================
-function resetFlags() {
-  resultsShown = false;
-  lastResultsId = null;
-  isPollShown = false;
-  currentPollId = null;
-  amISender = false;
+function resetState() {
+  state.currentPollId = null;
+  state.lastResultsId = null;
+  state.resultsShown = false;
+  saveState();
 }
 
 // ============================================
@@ -273,7 +266,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // Создание опроса
   if (request.action === 'createPoll') {
     // Сбрасываем флаги перед созданием нового опроса
-    resetFlags();
+    resetState();
     
     fetch(`${SERVER_URL}/create-poll`, {
       method: 'POST',
@@ -300,8 +293,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     console.log('🗳️ Голос:', request.data.vote);
     
     // Сбрасываем флаг результатов при голосовании
-    resultsShown = false;
-    lastResultsId = null;
+    state.resultsShown = false;
+    state.lastResultsId = null;
+    saveState();
     
     fetch(`${SERVER_URL}/vote`, {
       method: 'POST',
@@ -344,7 +338,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // ============================================
 // 10. Запуск
 // ============================================
-chrome.storage.local.get(['serverIP'], (result) => {
+chrome.storage.local.get(['serverIP', 'currentPollId', 'lastResultsId', 'resultsShown'], (result) => {
+  // Восстанавливаем состояние после «засыпания» worker'а
+  state.currentPollId = result.currentPollId || null;
+  state.lastResultsId = result.lastResultsId || null;
+  state.resultsShown = !!result.resultsShown;
+  
   if (result.serverIP) {
     SERVER_URL = `http://${result.serverIP}:${SERVER_PORT}`;
     registerClient();
@@ -372,7 +371,6 @@ chrome.tabs.onActivated.addListener(() => {
 chrome.windows.onRemoved.addListener((id) => {
   if (id === activeWindowId) {
     activeWindowId = null;
-    isPollShown = false;
   }
 });
 

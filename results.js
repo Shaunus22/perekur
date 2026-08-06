@@ -87,4 +87,7 @@ if (dataParam) {
     console.error('Ошибка:', e);
     content.textContent = '❌ Ошибка загрузки результатов';
   }
+  
+  // Авто-закрытие окна результатов
+  setTimeout(() => window.close(), 30000);
 }

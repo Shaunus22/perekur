@@ -24,6 +24,9 @@ if (dataParam) {
   } catch (e) {
     console.error('Ошибка:', e);
   }
+  
+  // Авто-закрытие окна опроса, если не проголосовали
+  setTimeout(() => window.close(), 60000);
 }
 
 function sendVote(vote, pollId) {
