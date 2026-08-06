@@ -4,7 +4,6 @@ document.addEventListener('DOMContentLoaded', function() {
   const clientsSpan = document.getElementById('clientsCount');
   const nameInput = document.getElementById('name');
   const serverIPInput = document.getElementById('serverIP');
-  const githubRepoInput = document.getElementById('githubRepo');
   const checkBtn = document.getElementById('checkBtn');
   const currentVersionSpan = document.getElementById('currentVersion');
   const updateStatusDiv = document.getElementById('updateStatus');
@@ -14,7 +13,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
   let SERVER_URL = '';
 
-  chrome.storage.local.get(['serverIP', 'clientName', 'githubRepo'], function(result) {
+  chrome.storage.local.get(['serverIP', 'clientName'], function(result) {
     if (result.serverIP) {
       serverIPInput.value = result.serverIP;
       SERVER_URL = `http://${result.serverIP}:${SERVER_PORT}`;
@@ -24,9 +23,6 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     if (result.clientName) {
       nameInput.value = result.clientName;
-    }
-    if (result.githubRepo) {
-      githubRepoInput.value = result.githubRepo;
     }
     checkStatus();
     autoCheckForUpdates();
@@ -56,11 +52,6 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   });
 
-  githubRepoInput.addEventListener('change', function() {
-    const repo = githubRepoInput.value.trim();
-    chrome.storage.local.set({ githubRepo: repo });
-  });
-
   checkBtn.addEventListener('click', checkForUpdates);
 
   function autoCheckForUpdates() {
@@ -73,8 +64,8 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   function getRepo() {
-    const repo = (githubRepoInput.value || '').trim() || DEFAULT_GITHUB_REPO;
-    return repo.replace(/^https?:\/\/(www\.)?github\.com\//, '').replace(/\/$/, '');
+    // Репозиторий задан в config.js (DEFAULT_GITHUB_REPO)
+    return DEFAULT_GITHUB_REPO;
   }
 
   function checkForUpdates() {
