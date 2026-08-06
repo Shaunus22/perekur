@@ -160,7 +160,6 @@ document.addEventListener('DOMContentLoaded', function() {
     statusDiv.className = '';
 
     const messages = [
-      '☕ Кто-то зовет на перекур!',
       '🎉 Перекур объявлен!',
       '🏃 Все на перекур!'
     ];

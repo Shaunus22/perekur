@@ -180,7 +180,7 @@ const server = http.createServer((req, res) => {
                 // Создаем новый опрос
                 activePoll = {
                     id: Date.now().toString() + '_' + Math.random().toString(36).slice(2, 7),
-                    message: data.message || 'Кто-то зовет на перекур! ☕',
+                    message: data.message || 'Пойдем на перекур! ☕',
                     sender: data.sender || 'Кто-то',
                     senderId: data.senderId || null,
                     timestamp: new Date().toISOString(),

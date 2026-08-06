@@ -5,11 +5,11 @@ importScripts('config.js');
 let SERVER_URL = '';
 let clientId = null;
 let currentName = null;
-let activeWindowId = null;
+
+const ICON_URL = chrome.runtime.getURL('icons/icon128.png');
 
 // Состояние хранится в chrome.storage.local, чтобы не теряться
-// при «засыпании» service worker'а (MV3). Иначе после перезапуска
-// закрытые окна опроса/результатов открывались бы снова.
+// при «засыпании» service worker'а (MV3).
 let state = {
   currentPollId: null,
   lastResultsId: null,
@@ -79,7 +79,6 @@ function checkPoll() {
   .then(data => {
     // Нет опроса
     if (!data.poll) {
-      if (activeWindowId && !state.resultsShown) closeWindow();
       if (state.currentPollId) {
         state.currentPollId = null;
         saveState();
@@ -89,10 +88,9 @@ function checkPoll() {
     
     const poll = data.poll;
     
-    // Если это наш опрос (мы отправитель)
+    // Если это наш опрос (мы отправитель) — ждем результатов
     if (poll.senderId === clientId) {
       console.log('📝 Мы отправитель, ждем результаты...');
-      if (activeWindowId && !state.resultsShown) closeWindow();
       if (state.currentPollId) {
         state.currentPollId = null;
         saveState();
@@ -102,7 +100,6 @@ function checkPoll() {
     
     // Если уже голосовали
     if (poll.hasVoted) {
-      if (activeWindowId && !state.resultsShown) closeWindow();
       if (state.currentPollId) {
         state.currentPollId = null;
         saveState();
@@ -110,15 +107,15 @@ function checkPoll() {
       return;
     }
     
-    // Если это тот же опрос и уже был показан (или закрыт) - НЕ открываем повторно
+    // Если это тот же опрос и уведомление уже показывали - НЕ показываем повторно
     if (state.currentPollId === poll.id) {
       return;
     }
     
-    // Показываем опрос
+    // Показываем уведомление с опросом
     state.currentPollId = poll.id;
     saveState();
-    showPoll(poll);
+    showPollNotification(poll);
   })
   .catch(() => {});
 }
@@ -149,124 +146,150 @@ function checkResults() {
       console.log('📊 Получены новые результаты!');
       state.resultsShown = true;
       state.lastResultsId = resultsId;
+      state.currentPollId = null;
       saveState();
       
-      // Показываем результаты
-      showResults(data.results, data.poll);
+      showResultsNotification(data.results, data.poll);
     }
   })
   .catch(() => {});
 }
 
 // ============================================
-// 5. Показ опроса
+// 5. Показ уведомления опроса
 // ============================================
-function showPoll(poll) {
-  if (activeWindowId) {
-    chrome.windows.remove(activeWindowId, () => {
-      activeWindowId = null;
-    });
-  }
+function showPollNotification(poll) {
+  const id = 'poll_' + poll.id;
+  const time = new Date(poll.timestamp).toLocaleTimeString();
   
-  const encoded = encodeURIComponent(JSON.stringify(poll));
-  const url = chrome.runtime.getURL('notification.html') + '?data=' + encoded;
-  
-  chrome.windows.create({
-    url: url,
-    type: 'popup',
-    width: 450,
-    height: 520,
-    focused: true
-  }, (win) => {
-    if (win) {
-      activeWindowId = win.id;
-      console.log('✅ Окно опроса открыто (ID:', poll.id, ')');
-      // Авто-закрытие окна выполняется в самой странице (notification.js).
-      // currentPollId сохранен в storage — окно повторно не откроется.
+  chrome.notifications.create(id, {
+    type: 'basic',
+    iconUrl: ICON_URL,
+    title: `${poll.sender} предлагает перекур!`,
+    message: `${poll.message}\n⏱️ ${time}`,
+    buttons: [
+      { title: '✅ Пойду' },
+      { title: '❌ Не пойду' }
+    ],
+    priority: 1,
+    requireInteraction: false
+  }, () => {
+    if (chrome.runtime.lastError) {
+      console.log('⚠️ Ошибка уведомления опроса:', chrome.runtime.lastError.message);
+      return;
     }
+    console.log('✅ Уведомление опроса показано (ID:', poll.id, ')');
+    
+    // Убираем уведомление через 60 секунд, если не проголосовали
+    setTimeout(() => chrome.notifications.clear(id), 60000);
   });
 }
 
 // ============================================
-// 6. Показ результатов
+// 6. Показ уведомления результатов
 // ============================================
-function showResults(results, poll) {
-  // Закрываем старое окно если оно есть
-  if (activeWindowId) {
-    chrome.windows.remove(activeWindowId, () => {
-      activeWindowId = null;
-    });
-  }
+function showResultsNotification(results, poll) {
+  const yesVoters = (results.yesVoters || []).join(', ');
+  const noVoters = (results.noVoters || []).join(', ');
+  const total = results.total || 0;
+  const totalClients = results.totalClients || 0;
   
-  // Сбрасываем флаг опроса — опрос завершен
-  state.currentPollId = null;
-  saveState();
+  let message = `✅ ${results.yes || 0} идут  ❌ ${results.no || 0} не идут\n`;
+  if (yesVoters) message += `🟢 ${yesVoters}\n`;
+  if (noVoters) message += `🔴 ${noVoters}\n`;
+  message += `Проголосовало: ${total} из ${totalClients}`;
   
-  // Определяем, кто мы: отправитель или проголосовавший
-  let userVote = null;
-  if (poll && poll.userVote) {
-    userVote = poll.userVote;
-  } else if (poll && poll.isSender) {
-    userVote = 'yes';
-  }
+  const id = 'results_' + (results.resultsId || Date.now());
   
-  const data = { 
-    results: results, 
-    poll: poll,
-    isSender: poll ? poll.isSender : false,
-    userVote: userVote
-  };
-  
-  const encoded = encodeURIComponent(JSON.stringify(data));
-  const url = chrome.runtime.getURL('results.html') + '?data=' + encoded;
-  
-  chrome.windows.create({
-    url: url,
-    type: 'popup',
-    width: 420,
-    height: 520,
-    focused: true
-  }, (win) => {
-    if (win) {
-      activeWindowId = win.id;
-      console.log('✅ Окно результатов открыто');
-      // Авто-закрытие окна выполняется в самой странице (results.js).
-      // resultsShown/lastResultsId сохранены в storage — результаты
-      // не будут показаны повторно, даже после «засыпания» worker'а.
+  chrome.notifications.create(id, {
+    type: 'basic',
+    iconUrl: ICON_URL,
+    title: '📊 Результаты опроса!',
+    message: message.slice(0, 500),
+    priority: 1,
+    requireInteraction: false
+  }, () => {
+    if (chrome.runtime.lastError) {
+      console.log('⚠️ Ошибка уведомления результатов:', chrome.runtime.lastError.message);
+      return;
     }
+    console.log('✅ Уведомление результатов показано');
+    
+    // Убираем уведомление через 30 секунд
+    setTimeout(() => chrome.notifications.clear(id), 30000);
   });
 }
 
 // ============================================
-// 7. Закрытие окна
+// 7. Обработка кликов по уведомлениям
 // ============================================
-function closeWindow() {
-  if (activeWindowId) {
-    chrome.windows.remove(activeWindowId, () => {
-      activeWindowId = null;
-    });
-  }
-}
+chrome.notifications.onButtonClicked.addListener((notificationId, buttonIndex) => {
+  console.log('🔘 Кнопка уведомления:', notificationId, buttonIndex);
+  
+  // Убираем уведомление опроса сразу после клика
+  chrome.notifications.clear(notificationId);
+  
+  if (!notificationId.startsWith('poll_')) return;
+  
+  const vote = buttonIndex === 0 ? 'yes' : 'no';
+  sendVote(vote);
+});
 
-// ============================================
-// 8. Сброс состояния при новом опросе
-// ============================================
-function resetState() {
-  state.currentPollId = null;
-  state.lastResultsId = null;
+chrome.notifications.onClicked.addListener((notificationId) => {
+  chrome.notifications.clear(notificationId);
+});
+
+function sendVote(vote) {
+  if (!clientId) return;
+  if (!SERVER_URL) return;
+  
+  console.log('🗳️ Голос:', vote);
+  
+  // Сбрасываем флаг результатов при голосовании
   state.resultsShown = false;
+  state.lastResultsId = null;
   saveState();
+  
+  fetch(`${SERVER_URL}/vote`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      clientId: clientId,
+      vote: vote,
+      name: currentName
+    })
+  })
+  .then(r => r.json())
+  .then(data => {
+    console.log('✅ Голос обработан');
+    if (data.success !== false) {
+      const id = 'vote_' + Date.now();
+      const text = vote === 'yes' ? '✅ Вы идете на перекур!' : '❌ Вы не идете на перекур';
+      chrome.notifications.create(id, {
+        type: 'basic',
+        iconUrl: ICON_URL,
+        title: text,
+        message: 'Ждем остальных...',
+        requireInteraction: false
+      });
+      setTimeout(() => chrome.notifications.clear(id), 3000);
+    }
+  })
+  .catch(err => console.log('⚠️ Ошибка голосования:', err.message));
 }
 
 // ============================================
-// 9. Обработка сообщений
+// 8. Обработка сообщений
 // ============================================
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   
   // Создание опроса
   if (request.action === 'createPoll') {
     // Сбрасываем флаги перед созданием нового опроса
-    resetState();
+    state.currentPollId = null;
+    state.lastResultsId = null;
+    state.resultsShown = false;
+    saveState();
     
     fetch(`${SERVER_URL}/create-poll`, {
       method: 'POST',
@@ -281,35 +304,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     .then(data => {
       console.log('✅ Опрос создан!');
       sendResponse({ success: data.success !== false, pollId: data.pollId, error: data.message });
-    })
-    .catch(err => {
-      sendResponse({ success: false, error: err.message });
-    });
-    return true;
-  }
-  
-  // Голосование
-  if (request.action === 'vote') {
-    console.log('🗳️ Голос:', request.data.vote);
-    
-    // Сбрасываем флаг результатов при голосовании
-    state.resultsShown = false;
-    state.lastResultsId = null;
-    saveState();
-    
-    fetch(`${SERVER_URL}/vote`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        clientId: clientId,
-        vote: request.data.vote,
-        name: currentName
-      })
-    })
-    .then(r => r.json())
-    .then(data => {
-      console.log('✅ Голос обработан');
-      sendResponse({ success: data.success !== false, data: data });
     })
     .catch(err => {
       sendResponse({ success: false, error: err.message });
@@ -336,7 +330,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 // ============================================
-// 10. Запуск
+// 9. Запуск
 // ============================================
 chrome.storage.local.get(['serverIP', 'currentPollId', 'lastResultsId', 'resultsShown'], (result) => {
   // Восстанавливаем состояние после «засыпания» worker'а
@@ -365,13 +359,6 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 chrome.tabs.onActivated.addListener(() => {
   checkPoll();
   checkResults();
-});
-
-// При закрытии окна опроса/результатов
-chrome.windows.onRemoved.addListener((id) => {
-  if (id === activeWindowId) {
-    activeWindowId = null;
-  }
 });
 
 console.log('✅ Background готов!');
