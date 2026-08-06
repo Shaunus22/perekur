@@ -161,7 +161,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
     const messages = [
       '☕ Кто-то зовет на перекур!',
-      '☕ Время кофе-брейка!',
       '🎉 Перекур объявлен!',
       '🏃 Все на перекур!'
     ];
