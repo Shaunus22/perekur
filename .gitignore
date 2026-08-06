@@ -1,0 +1,14 @@
+# Node
+node_modules/
+
+# Сборка расширения
+*.crx
+*.pem
+
+# Редакторы
+.vscode/
+.idea/
+
+# Системное
+.DS_Store
+Thumbs.db

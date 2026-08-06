@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Перекур",
+  "version": "1.0",
+  "description": "Позови коллег на перекур!",
+  "permissions": [
+    "storage",
+    "windows",
+    "alarms"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://raw.githubusercontent.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}
