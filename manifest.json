@@ -10,7 +10,7 @@
   ],
   "host_permissions": [
     "http://*/*",
-    "https://raw.githubusercontent.com/*"
+    "https://api.github.com/*"
   ],
   "action": {
     "default_popup": "popup.html"

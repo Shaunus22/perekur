@@ -78,7 +78,11 @@ document.addEventListener('DOMContentLoaded', function() {
     updateStatusDiv.textContent = 'Проверяем обновления...';
     updateStatusDiv.className = '';
 
-    fetch(`https://raw.githubusercontent.com/${repo}/${GITHUB_BRANCH}/version.txt?t=${Date.now()}`)
+    // GitHub API отдаёт свежие данные и не кэшируется CDN как raw.githubusercontent
+    fetch(`https://api.github.com/repos/${repo}/contents/version.txt`, {
+      headers: { 'Accept': 'application/vnd.github.v3.raw' },
+      cache: 'no-store'
+    })
       .then(response => {
         if (!response.ok) throw new Error('Репозиторий не найден');
         return response.text();
