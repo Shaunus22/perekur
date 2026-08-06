@@ -2,8 +2,9 @@ console.log('🔧 BACKGROUND ЗАГРУЖЕН!');
 
 importScripts('config.js');
 
-let SERVER_URL = DEFAULT_SERVER_URL;
+let SERVER_URL = '';
 let clientId = null;
+let currentName = null;
 let activeWindowId = null;
 let isPollShown = false;
 let currentPollId = null;
@@ -33,15 +34,16 @@ function getClientId() {
 // 2. Регистрация на сервере
 // ============================================
 function registerClient() {
+  if (!SERVER_URL) return;
   getClientId().then(id => {
     clientId = id;
     chrome.storage.local.get(['clientName'], (result) => {
-      const name = result.clientName || 'PC_' + id.slice(0, 6);
+      currentName = result.clientName || 'PC_' + id.slice(0, 6);
 
       fetch(`${SERVER_URL}/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clientId: clientId, name: name })
+        body: JSON.stringify({ clientId: clientId, name: currentName })
       })
       .then(() => {
         console.log('✅ Зарегистрирован');
@@ -58,11 +60,12 @@ function registerClient() {
 // ============================================
 function checkPoll() {
   if (!clientId) return;
+  if (!SERVER_URL) return;
   
   fetch(`${SERVER_URL}/get-poll`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ clientId: clientId })
+    body: JSON.stringify({ clientId: clientId, name: currentName })
   })
   .then(r => r.json())
   .then(data => {
@@ -114,11 +117,12 @@ function checkPoll() {
 // ============================================
 function checkResults() {
   if (!clientId) return;
+  if (!SERVER_URL) return;
   
   fetch(`${SERVER_URL}/get-results`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ clientId: clientId })
+    body: JSON.stringify({ clientId: clientId, name: currentName })
   })
   .then(r => r.json())
   .then(data => {
@@ -304,7 +308,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         clientId: clientId,
-        vote: request.data.vote
+        vote: request.data.vote,
+        name: currentName
       })
     })
     .then(r => r.json())
@@ -324,7 +329,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (ip) {
       SERVER_URL = `http://${ip}:${SERVER_PORT}`;
       console.log(`🔌 Сервер изменен: ${SERVER_URL}`);
+      registerClient();
     }
+    sendResponse({ ok: true });
+  }
+  
+  // Обновление имени (перечитывает имя из storage и перерегистрируется)
+  if (request.action === 'updateName') {
+    registerClient();
     sendResponse({ ok: true });
   }
 });
@@ -335,8 +347,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 chrome.storage.local.get(['serverIP'], (result) => {
   if (result.serverIP) {
     SERVER_URL = `http://${result.serverIP}:${SERVER_PORT}`;
+    registerClient();
+  } else {
+    console.log('⚠️ IP сервера не задан — введите его в настройках расширения');
   }
-  registerClient();
 });
 
 // Проверка опроса каждые 30 секунд (chrome.alarms - надежный способ для MV3)

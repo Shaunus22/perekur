@@ -12,12 +12,15 @@ document.addEventListener('DOMContentLoaded', function() {
   const currentVersion = chrome.runtime.getManifest().version;
   currentVersionSpan.textContent = currentVersion;
 
-  let SERVER_URL = DEFAULT_SERVER_URL;
+  let SERVER_URL = '';
 
   chrome.storage.local.get(['serverIP', 'clientName', 'githubRepo'], function(result) {
     if (result.serverIP) {
       serverIPInput.value = result.serverIP;
       SERVER_URL = `http://${result.serverIP}:${SERVER_PORT}`;
+    } else {
+      statusDiv.textContent = 'Введите IP сервера выше';
+      statusDiv.className = '';
     }
     if (result.clientName) {
       nameInput.value = result.clientName;
@@ -31,7 +34,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
   nameInput.addEventListener('change', function() {
     const name = nameInput.value.trim() || 'Кто-то';
-    chrome.storage.local.set({ clientName: name });
+    chrome.storage.local.set({ clientName: name }, function() {
+      chrome.runtime.sendMessage({
+        action: 'updateName',
+        data: { name: name }
+      });
+    });
     nameInput.value = name;
   });
 
@@ -129,6 +137,11 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   function checkStatus() {
+    if (!SERVER_URL) {
+      statusDiv.textContent = 'Введите IP сервера выше';
+      statusDiv.className = '';
+      return;
+    }
     fetch(`${SERVER_URL}/status`)
       .then(response => response.json())
       .then(data => {

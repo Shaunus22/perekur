@@ -20,10 +20,26 @@ function getLocalIP() {
     return 'localhost';
 }
 
-// Обновляем время последней активности клиента
-function touchClient(clientId) {
+// Регистрируем клиента или обновляем его имя/время активности.
+// Вызывается на любом запросе от клиента, чтобы имена не терялись
+// при перезапуске сервера.
+function upsertClient(clientId, name, ip) {
     const client = clients.find(c => c.id === clientId);
-    if (client) client.lastSeen = Date.now();
+    if (client) {
+        if (name) client.name = name;
+        if (ip) client.ip = ip;
+        client.lastSeen = Date.now();
+        return client;
+    }
+    const newClient = {
+        id: clientId,
+        name: name || 'Аноним',
+        ip: ip || 'unknown',
+        registeredAt: new Date().toISOString(),
+        lastSeen: Date.now()
+    };
+    clients.push(newClient);
+    return newClient;
 }
 
 function getRandomImage() {
@@ -110,21 +126,14 @@ const server = http.createServer((req, res) => {
                 const clientId = data.clientId || req.socket.remoteAddress;
                 const clientName = data.name || 'Аноним';
                 
-                const existing = clients.find(c => c.id === clientId);
-                if (!existing) {
-                    clients.push({
-                        id: clientId,
-                        name: clientName,
-                        ip: req.socket.remoteAddress,
-                        registeredAt: new Date().toISOString(),
-                        lastSeen: Date.now()
-                    });
+                const wasRegistered = clients.some(c => c.id === clientId);
+                upsertClient(clientId, clientName, req.socket.remoteAddress);
+                
+                if (wasRegistered) {
+                    console.log(`🔄 Обновлена регистрация: ${clientName}`);
+                } else {
                     console.log(`✅ ЗАРЕГИСТРИРОВАН: ${clientName}`);
                     console.log(`📊 Всего клиентов: ${clients.length}`);
-                } else {
-                    existing.name = clientName;
-                    existing.lastSeen = Date.now();
-                    console.log(`🔄 Обновлена регистрация: ${clientName}`);
                 }
                 
                 res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -195,12 +204,6 @@ const server = http.createServer((req, res) => {
                     .filter(c => c.id !== data.senderId)
                     .map(c => c.id);
                 
-                // Если кроме инициатора никого нет - завершаем сразу
-                if (activePoll.expectedVoters.length === 0) {
-                    console.log('👥 Нет других клиентов, опрос завершен сразу');
-                    endPoll();
-                }
-                
                 console.log('========================================');
                 console.log('📢 НОВЫЙ ОПРОС!');
                 console.log(`🆔 ID: ${activePoll.id}`);
@@ -235,7 +238,7 @@ const server = http.createServer((req, res) => {
                 const data = JSON.parse(body);
                 const clientId = data.clientId || 'unknown';
                 
-                touchClient(clientId);
+                upsertClient(clientId, data.name, req.socket.remoteAddress);
                 
                 // Если нет активного опроса или он завершен
                 if (!activePoll || activePoll.ended) {
@@ -297,7 +300,7 @@ const server = http.createServer((req, res) => {
                 const clientId = data.clientId || 'unknown';
                 const vote = data.vote;
                 
-                touchClient(clientId);
+                upsertClient(clientId, data.name, req.socket.remoteAddress);
                 
                 if (vote !== 'yes' && vote !== 'no') {
                     console.log(`⚠️ Некорректный голос: ${vote}`);
@@ -338,7 +341,8 @@ const server = http.createServer((req, res) => {
                 console.log(`📊 ЗА: ${yesCount}, ПРОТИВ: ${noCount}`);
                 
                 // Проверяем, все ли клиенты проголосовали (только те, кто был в сети при создании опроса)
-                const allVoted = activePoll.expectedVoters.every(id => activePoll.voters.includes(id));
+                const allVoted = activePoll.expectedVoters.length > 0 &&
+                    activePoll.expectedVoters.every(id => activePoll.voters.includes(id));
                 
                 if (allVoted && clients.length > 0) {
                     console.log('✅ ВСЕ ПРОГОЛОСОВАЛИ! Завершаем опрос');
@@ -372,7 +376,7 @@ const server = http.createServer((req, res) => {
                 const data = JSON.parse(body);
                 const clientId = data.clientId || 'unknown';
                 
-                touchClient(clientId);
+                upsertClient(clientId, data.name, req.socket.remoteAddress);
                 
                 if (!activePoll) {
                     res.writeHead(200, { 'Content-Type': 'application/json' });
