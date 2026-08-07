@@ -248,7 +248,16 @@ function checkShrek() {
 
 function showShrekNotification(shrek) {
   const id = 'shrek_' + shrek.id;
-  const imageUrl = chrome.runtime.getURL('prikol/Shrek_prikol.webp');
+  const images = [
+    'prikol/1.webp',
+    'prikol/2.jpg',
+    'prikol/3.webp',
+    'prikol/4.webp',
+    'prikol/5.jpg',
+    'prikol/6.jpg',
+    'prikol/7.webp'
+  ];
+  const imageUrl = chrome.runtime.getURL(images[Math.floor(Math.random() * images.length)]);
   
   chrome.notifications.create(id, {
     type: 'image',

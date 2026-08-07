@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Перекур",
-  "version": "1.3",
+  "version": "1.3.1",
   "description": "Позови коллег на перекур!",
   "icons": {
     "128": "icons/icon128.png"
@@ -23,7 +23,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["prikol/Shrek_prikol.webp", "icons/*"],
+      "resources": ["prikol/*", "icons/*"],
       "matches": ["<all_urls>"]
     }
   ]
