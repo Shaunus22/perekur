@@ -195,4 +195,29 @@ document.addEventListener('DOMContentLoaded', function() {
   });
 
   setInterval(checkStatus, 10000);
+
+  document.getElementById('shrekImg').addEventListener('click', function() {
+    chrome.storage.local.get(['clientName'], (result) => {
+      const name = result.clientName || 'Кто-то';
+
+      chrome.runtime.sendMessage({
+        action: 'sendShrek',
+        data: { sender: name }
+      }, function(response) {
+        if (response && response.success) {
+          statusDiv.textContent = '🟢 Шрек отправлен коллегам!';
+          statusDiv.className = 'status-ok';
+        } else {
+          statusDiv.textContent = '❌ Ошибка: ' + (response?.error || 'сервер недоступен');
+          statusDiv.className = 'status-error';
+        }
+        setTimeout(() => {
+          if (statusDiv.className !== 'status-error') {
+            statusDiv.textContent = 'Готов к работе';
+            statusDiv.className = '';
+          }
+        }, 3000);
+      });
+    });
+  });
 });

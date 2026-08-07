@@ -13,7 +13,8 @@ const ICON_URL = chrome.runtime.getURL('icons/icon128.png');
 let state = {
   currentPollId: null,
   lastResultsId: null,
-  resultsShown: false
+  resultsShown: false,
+  lastShrekId: null
 };
 
 function saveState() {
@@ -57,6 +58,7 @@ function registerClient() {
         console.log('✅ Зарегистрирован');
         checkPoll();
         checkResults();
+        checkShrek();
       })
       .catch(() => console.log('⚠️ Сервер недоступен'));
     });
@@ -221,7 +223,53 @@ function showResultsNotification(results, poll) {
 }
 
 // ============================================
-// 7. Обработка кликов по уведомлениям
+// 7. Шрек
+// ============================================
+function checkShrek() {
+  if (!clientId) return;
+  if (!SERVER_URL) return;
+  
+  fetch(`${SERVER_URL}/get-shrek`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ clientId: clientId, name: currentName })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (!data.shrek) return;
+    if (state.lastShrekId === data.shrek.id) return;
+    
+    state.lastShrekId = data.shrek.id;
+    saveState();
+    showShrekNotification(data.shrek);
+  })
+  .catch(() => {});
+}
+
+function showShrekNotification(shrek) {
+  const id = 'shrek_' + shrek.id;
+  const imageUrl = chrome.runtime.getURL('prikol/Shrek_prikol.webp');
+  
+  chrome.notifications.create(id, {
+    type: 'image',
+    iconUrl: ICON_URL,
+    imageUrl: imageUrl,
+    title: `${shrek.sender} зовет на перекур!`,
+    message: '👹 ШРЕК УЖЕ ИДЕТ! 🟢',
+    priority: 2,
+    requireInteraction: true
+  }, () => {
+    if (chrome.runtime.lastError) {
+      console.log('⚠️ Ошибка уведомления шрека:', chrome.runtime.lastError.message);
+      return;
+    }
+    console.log('🟢 Уведомление Шрека показано');
+    setTimeout(() => chrome.notifications.clear(id), 30000);
+  });
+}
+
+// ============================================
+// 8. Обработка кликов по уведомлениям
 // ============================================
 chrome.notifications.onButtonClicked.addListener((notificationId, buttonIndex) => {
   console.log('🔘 Кнопка уведомления:', notificationId, buttonIndex);
@@ -311,6 +359,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
   
+  // Отправка Шрека коллегам
+  if (request.action === 'sendShrek') {
+    fetch(`${SERVER_URL}/send-shrek`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sender: request.data.sender,
+        senderId: clientId
+      })
+    })
+    .then(r => r.json())
+    .then(data => {
+      sendResponse({ success: data.success !== false });
+    })
+    .catch(err => {
+      sendResponse({ success: false, error: err.message });
+    });
+    return true;
+  }
+  
   // Обновление IP сервера из настроек
   if (request.action === 'updateServerURL') {
     const ip = request.data && request.data.serverIP;
@@ -332,11 +400,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // ============================================
 // 9. Запуск
 // ============================================
-chrome.storage.local.get(['serverIP', 'currentPollId', 'lastResultsId', 'resultsShown'], (result) => {
+chrome.storage.local.get(['serverIP', 'currentPollId', 'lastResultsId', 'resultsShown', 'lastShrekId'], (result) => {
   // Восстанавливаем состояние после «засыпания» worker'а
   state.currentPollId = result.currentPollId || null;
   state.lastResultsId = result.lastResultsId || null;
   state.resultsShown = !!result.resultsShown;
+  state.lastShrekId = result.lastShrekId || null;
   
   if (result.serverIP) {
     SERVER_URL = `http://${result.serverIP}:${SERVER_PORT}`;
@@ -349,16 +418,19 @@ chrome.storage.local.get(['serverIP', 'currentPollId', 'lastResultsId', 'results
 // Проверка опроса каждые 30 секунд (chrome.alarms - надежный способ для MV3)
 chrome.alarms.create('checkPoll', { periodInMinutes: 0.5 });
 chrome.alarms.create('checkResults', { periodInMinutes: 0.5 });
+chrome.alarms.create('checkShrek', { periodInMinutes: 0.5 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'checkPoll') checkPoll();
   if (alarm.name === 'checkResults') checkResults();
+  if (alarm.name === 'checkShrek') checkShrek();
 });
 
 // При активации вкладки
 chrome.tabs.onActivated.addListener(() => {
   checkPoll();
   checkResults();
+  checkShrek();
 });
 
 console.log('✅ Background готов!');

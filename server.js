@@ -3,6 +3,7 @@ const os = require('os');
 
 let clients = [];
 let activePoll = null;
+let activeShrek = null;
 
 // ============================================
 // Вспомогательные функции
@@ -442,7 +443,65 @@ const server = http.createServer((req, res) => {
     }
 
     // ==========================================
-    // 8. 404
+    // 8. ОТПРАВКА ШРЕКА
+    // ==========================================
+    if (req.method === 'POST' && req.url === '/send-shrek') {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body);
+                activeShrek = {
+                    id: Date.now().toString() + '_' + Math.random().toString(36).slice(2, 7),
+                    sender: data.sender || 'Кто-то',
+                    senderId: data.senderId || null,
+                    timestamp: new Date().toISOString()
+                };
+                console.log('🟢 ШРЕК ОТПРАВЛЕН! От: ' + activeShrek.sender);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true }));
+            } catch (e) {
+                console.error('❌ Ошибка отправки шрека:', e);
+                res.writeHead(400);
+                res.end(JSON.stringify({ success: false, error: e.message }));
+            }
+        });
+        return;
+    }
+
+    // ==========================================
+    // 9. ПОЛУЧЕНИЕ ШРЕКА
+    // ==========================================
+    if (req.method === 'POST' && req.url === '/get-shrek') {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body);
+                const clientId = data.clientId || 'unknown';
+                
+                upsertClient(clientId, data.name, req.socket.remoteAddress);
+                
+                // Отправителю не показываем
+                if (!activeShrek || activeShrek.senderId === clientId) {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ shrek: null }));
+                    return;
+                }
+                
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ shrek: activeShrek }));
+            } catch (e) {
+                console.error('❌ Ошибка получения шрека:', e);
+                res.writeHead(400);
+                res.end(JSON.stringify({ shrek: null }));
+            }
+        });
+        return;
+    }
+
+    // ==========================================
+    // 10. 404
     // ==========================================
     res.writeHead(404);
     res.end('Not found');
@@ -484,6 +543,17 @@ setInterval(() => {
         console.log(`🗑️ Удалено ${removed} неактивных клиентов`);
     }
 }, 60000);
+
+// Удаление шрека через 5 минут
+setInterval(() => {
+    if (activeShrek) {
+        const age = Date.now() - new Date(activeShrek.timestamp).getTime();
+        if (age > 300000) { // 5 минут
+            console.log('🗑️ Удаляем шрека');
+            activeShrek = null;
+        }
+    }
+}, 30000);
 
 // ============================================
 // ЗАПУСК СЕРВЕРА
