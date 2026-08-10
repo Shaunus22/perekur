@@ -144,9 +144,9 @@ document.addEventListener('DOMContentLoaded', function() {
     fetch(`${SERVER_URL}/status`)
       .then(response => response.json())
       .then(data => {
-        statusDiv.textContent = `✅ Сервер активен (${data.clients} клиентов)`;
+        statusDiv.textContent = `✅ Сервер активен (${data.onlineCount ?? data.clients} онлайн)`;
         statusDiv.className = 'status-ok';
-        clientsSpan.textContent = `👥 В сети: ${data.clients}`;
+        clientsSpan.textContent = `👥 В сети: ${data.onlineCount ?? data.clients}`;
       })
       .catch(() => {
         statusDiv.textContent = '⚠️ Сервер недоступен!';

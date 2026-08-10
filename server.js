@@ -443,6 +443,8 @@ const server = http.createServer((req, res) => {
             status: 'ok', 
             serverIP: getLocalIP(),
             clients: clients.length,
+            // Реально онлайн: активность за последние 90 секунд (клиенты пингуют раз в 30с)
+            onlineCount: clients.filter(c => Date.now() - c.lastSeen <= 90000).length,
             hasActivePoll: !!activePoll && !activePoll.ended,
             pollEnded: activePoll ? activePoll.ended : false
         }));
