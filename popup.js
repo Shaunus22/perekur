@@ -175,7 +175,10 @@ document.addEventListener('DOMContentLoaded', function() {
           sender: name
         }
       }, function(response) {
-        if (response && response.success) {
+        if (response && response.cancelled) {
+          statusDiv.textContent = '❌ ' + (response.cancelReason || 'Голосование отменено');
+          statusDiv.className = 'status-error';
+        } else if (response && response.success) {
           statusDiv.textContent = '✅ Опрос создан!';
           statusDiv.className = 'status-ok';
         } else {

@@ -230,7 +230,30 @@ const server = http.createServer((req, res) => {
                 activePoll.expectedVoters = clients
                     .filter(c => c.id !== data.senderId)
                     .map(c => c.id);
-                
+
+                // Если в опросе только сам отправитель (больше никого онлайн) — отменяем голосование
+                const onlineOthers = clients.filter(c =>
+                    c.id !== activePoll.senderId &&
+                    Date.now() - c.lastSeen <= 90000
+                ).length;
+
+                if (onlineOthers === 0) {
+                    activePoll.ended = true;
+                    activePoll.cancelled = true;
+                    activePoll.cancelReason = 'В опросе только 1 человек — голосование отменено';
+                    activePoll.results = {
+                        resultsId: Date.now().toString() + '_' + Math.random().toString(36).slice(2, 6),
+                        cancelled: true,
+                        reason: activePoll.cancelReason,
+                        sender: activePoll.sender,
+                        timestamp: new Date().toISOString()
+                    };
+                    console.log('========================================');
+                    console.log('❌ ОПРОС ОТМЕНЁН: только 1 человек (отправитель)');
+                    console.log(`📝 От: ${activePoll.sender}`);
+                    console.log('========================================');
+                }
+
                 console.log('========================================');
                 console.log('📢 НОВЫЙ ОПРОС!');
                 console.log(`🆔 ID: ${activePoll.id}`);
@@ -243,7 +266,9 @@ const server = http.createServer((req, res) => {
                 res.end(JSON.stringify({ 
                     success: true, 
                     pollId: activePoll.id,
-                    clientsCount: clients.length
+                    clientsCount: clients.length,
+                    cancelled: activePoll.cancelled || false,
+                    cancelReason: activePoll.cancelReason || null
                 }));
             } catch (e) {
                 console.error('❌ Ошибка создания опроса:', e);

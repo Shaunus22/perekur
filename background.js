@@ -191,6 +191,24 @@ function showPollNotification(poll) {
 // 6. Показ уведомления результатов
 // ============================================
 function showResultsNotification(results, poll) {
+  // Если голосование отменили (только 1 человек в опросе) — показываем причину
+  if (results.cancelled) {
+    const id = 'cancel_' + (results.resultsId || Date.now());
+    chrome.notifications.create(id, {
+      type: 'basic',
+      iconUrl: ICON_URL,
+      title: '❌ Голосование отменено',
+      message: (results.reason || 'Только 1 человек в опросе') + '\n' + (poll && poll.sender ? 'От: ' + poll.sender : ''),
+      priority: 1,
+      requireInteraction: false
+    }, () => {
+      if (chrome.runtime.lastError) return;
+      console.log('❌ Уведомление об отмене опроса показано');
+      setTimeout(() => chrome.notifications.clear(id), 10000);
+    });
+    return;
+  }
+
   const yesVoters = (results.yesVoters || []).join(', ');
   const noVoters = (results.noVoters || []).join(', ');
   const total = results.total || 0;
