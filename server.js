@@ -1,9 +1,28 @@
 const http = require('http');
 const os = require('os');
+const fs = require('fs');
+const path = require('path');
 
 let clients = [];
 let activePoll = null;
 let activeShrek = null;
+
+// Папка с картинками Шрека. Просто добавьте файл сюда — и он будет
+// выбираться рандомно, без изменения кода.
+const SHREK_IMAGE_DIR = path.join(__dirname, 'prikol');
+const IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
+
+function getRandomShrekImage() {
+    let files = [];
+    try {
+        files = fs.readdirSync(SHREK_IMAGE_DIR);
+    } catch (e) {
+        return null;
+    }
+    const images = files.filter(f => IMAGE_EXTS.includes(path.extname(f).toLowerCase()));
+    if (!images.length) return null;
+    return path.join(SHREK_IMAGE_DIR, images[Math.floor(Math.random() * images.length)]);
+}
 
 // ============================================
 // Вспомогательные функции
@@ -510,7 +529,29 @@ const server = http.createServer((req, res) => {
     }
 
     // ==========================================
-    // 10. 404
+    // 10. СЛУЧАЙНАЯ КАРТИНКА ШРЕКА
+    // ==========================================
+    if (req.method === 'GET' && req.url.startsWith('/shrek-image')) {
+        const file = getRandomShrekImage();
+        if (!file) {
+            res.writeHead(404, { 'Content-Type': 'text/plain' });
+            res.end('No shrek images in ' + SHREK_IMAGE_DIR);
+            return;
+        }
+        const mime = {
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.png': 'image/png',
+            '.webp': 'image/webp',
+            '.gif': 'image/gif'
+        }[path.extname(file).toLowerCase()] || 'application/octet-stream';
+        res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-store' });
+        fs.createReadStream(file).pipe(res);
+        return;
+    }
+
+    // ==========================================
+    // 11. 404
     // ==========================================
     res.writeHead(404);
     res.end('Not found');
