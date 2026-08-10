@@ -10,6 +10,8 @@ let shreks = []; // очередь всех отправленных шреко�
 // Папка с картинками Шрека. Просто добавьте файл сюда — и он будет
 // выбираться рандомно, без изменения кода.
 const SHREK_IMAGE_DIR = path.join(__dirname, 'prikol');
+// Сжатые анимированные WebP-версии больших GIF (конвертация: convert-gifs.sh)
+const SHREK_WEBP_DIR = path.join(__dirname, 'prikol-webp');
 const IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
 
 function getRandomShrekImage() {
@@ -21,7 +23,12 @@ function getRandomShrekImage() {
     }
     const images = files.filter(f => IMAGE_EXTS.includes(path.extname(f).toLowerCase()));
     if (!images.length) return null;
-    return path.join(SHREK_IMAGE_DIR, images[Math.floor(Math.random() * images.length)]);
+    const pick = path.join(SHREK_IMAGE_DIR, images[Math.floor(Math.random() * images.length)]);
+    // Если для файла есть сжатая webp-версия — отдаём её (гифки грузятся быстрее)
+    const base = path.basename(pick, path.extname(pick));
+    const webp = path.join(SHREK_WEBP_DIR, base + '.webp');
+    if (fs.existsSync(webp)) return webp;
+    return pick;
 }
 
 // ============================================
