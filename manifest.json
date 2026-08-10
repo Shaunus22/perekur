@@ -13,7 +13,7 @@
   ],
   "host_permissions": [
     "http://*/*",
-    "https://api.github.com/*"
+    "https://*/*"
   ],
   "action": {
     "default_popup": "popup.html"

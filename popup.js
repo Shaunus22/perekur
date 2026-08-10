@@ -16,7 +16,7 @@ document.addEventListener('DOMContentLoaded', function() {
   chrome.storage.local.get(['serverIP', 'clientName'], function(result) {
     if (result.serverIP) {
       serverIPInput.value = result.serverIP;
-      SERVER_URL = `http://${result.serverIP}:${SERVER_PORT}`;
+      SERVER_URL = normalizeServerURL(result.serverIP);
     } else {
       statusDiv.textContent = 'Введите IP сервера выше';
       statusDiv.className = '';
@@ -47,7 +47,7 @@ document.addEventListener('DOMContentLoaded', function() {
         action: 'updateServerURL',
         data: { serverIP: ip }
       });
-      SERVER_URL = `http://${ip}:${SERVER_PORT}`;
+      SERVER_URL = normalizeServerURL(ip);
       checkStatus();
     });
   });

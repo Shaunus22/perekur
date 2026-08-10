@@ -392,7 +392,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'updateServerURL') {
     const ip = request.data && request.data.serverIP;
     if (ip) {
-      SERVER_URL = `http://${ip}:${SERVER_PORT}`;
+      SERVER_URL = normalizeServerURL(ip);
       console.log(`🔌 Сервер изменен: ${SERVER_URL}`);
       registerClient();
     }
@@ -417,7 +417,7 @@ chrome.storage.local.get(['serverIP', 'currentPollId', 'lastResultsId', 'results
   state.lastShrekId = result.lastShrekId || null;
   
   if (result.serverIP) {
-    SERVER_URL = `http://${result.serverIP}:${SERVER_PORT}`;
+    SERVER_URL = normalizeServerURL(result.serverIP);
     registerClient();
   } else {
     console.log('⚠️ IP сервера не задан — введите его в настройках расширения');

@@ -21,6 +21,13 @@ function getLocalIP() {
     return 'localhost';
 }
 
+// IP клиента. За прокси (например, Caddy) реальный IP берём из x-forwarded-for
+function getClientIP(req) {
+    const fwd = req.headers['x-forwarded-for'];
+    if (fwd) return fwd.split(',')[0].trim();
+    return req.socket.remoteAddress;
+}
+
 // Регистрируем клиента или обновляем его имя/время активности.
 // Вызывается на любом запросе от клиента, чтобы имена не терялись
 // при перезапуске сервера.
@@ -124,11 +131,11 @@ const server = http.createServer((req, res) => {
         req.on('end', () => {
             try {
                 const data = JSON.parse(body);
-                const clientId = data.clientId || req.socket.remoteAddress;
+                const clientId = data.clientId || getClientIP(req);
                 const clientName = data.name || 'Аноним';
                 
                 const wasRegistered = clients.some(c => c.id === clientId);
-                upsertClient(clientId, clientName, req.socket.remoteAddress);
+                upsertClient(clientId, clientName, getClientIP(req));
                 
                 if (wasRegistered) {
                     console.log(`🔄 Обновлена регистрация: ${clientName}`);
@@ -239,7 +246,7 @@ const server = http.createServer((req, res) => {
                 const data = JSON.parse(body);
                 const clientId = data.clientId || 'unknown';
                 
-                upsertClient(clientId, data.name, req.socket.remoteAddress);
+                upsertClient(clientId, data.name, getClientIP(req));
                 
                 // Если нет активного опроса или он завершен
                 if (!activePoll || activePoll.ended) {
@@ -301,7 +308,7 @@ const server = http.createServer((req, res) => {
                 const clientId = data.clientId || 'unknown';
                 const vote = data.vote;
                 
-                upsertClient(clientId, data.name, req.socket.remoteAddress);
+                upsertClient(clientId, data.name, getClientIP(req));
                 
                 if (vote !== 'yes' && vote !== 'no') {
                     console.log(`⚠️ Некорректный голос: ${vote}`);
@@ -377,7 +384,7 @@ const server = http.createServer((req, res) => {
                 const data = JSON.parse(body);
                 const clientId = data.clientId || 'unknown';
                 
-                upsertClient(clientId, data.name, req.socket.remoteAddress);
+                upsertClient(clientId, data.name, getClientIP(req));
                 
                 if (!activePoll) {
                     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -480,7 +487,7 @@ const server = http.createServer((req, res) => {
                 const data = JSON.parse(body);
                 const clientId = data.clientId || 'unknown';
                 
-                upsertClient(clientId, data.name, req.socket.remoteAddress);
+                upsertClient(clientId, data.name, getClientIP(req));
                 
                 // Отправителю не показываем
                 if (!activeShrek || activeShrek.senderId === clientId) {
@@ -559,7 +566,7 @@ setInterval(() => {
 // ЗАПУСК СЕРВЕРА
 // ============================================
 
-const PORT = 3000;
+const PORT = parseInt(process.env.PORT, 10) || 3000;
 const localIP = getLocalIP();
 
 server.listen(PORT, '0.0.0.0', () => {
