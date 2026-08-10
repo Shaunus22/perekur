@@ -254,26 +254,25 @@ function checkShrek() {
 }
 
 function showShrekNotification(shrek) {
-  const id = 'shrek_' + shrek.id;
-  // Картинка берётся случайно с сервера (папка prikol/ на сервере).
+  // Системные уведомления Chrome не анимируют GIF (показывают первый кадр),
+  // поэтому показываем шрека в маленьком всплывающем окне, где GIF проигрывается.
   // cache-buster, чтобы каждая картинка была новой и не кэшировалась.
   const imageUrl = SERVER_URL + '/shrek-image?t=' + Date.now();
+  const title = shrek.sender + ' зовет на перекур!';
+  const url = 'shrek.html?img=' + encodeURIComponent(imageUrl) + '&title=' + encodeURIComponent(title);
   
-  chrome.notifications.create(id, {
-    type: 'image',
-    iconUrl: ICON_URL,
-    imageUrl: imageUrl,
-    title: `${shrek.sender} зовет на перекур!`,
-    message: '👹 ШРЕК УЖЕ ИДЕТ! 🟢',
-    priority: 2,
-    requireInteraction: true
+  chrome.windows.create({
+    url: url,
+    type: 'popup',
+    width: 420,
+    height: 420,
+    focused: true
   }, () => {
     if (chrome.runtime.lastError) {
-      console.log('⚠️ Ошибка уведомления шрека:', chrome.runtime.lastError.message);
+      console.log('⚠️ Ошибка открытия окна шрека:', chrome.runtime.lastError.message);
       return;
     }
-    console.log('🟢 Уведомление Шрека показано');
-    setTimeout(() => chrome.notifications.clear(id), 30000);
+    console.log('🟢 Окно Шрека открыто');
   });
 }
 
