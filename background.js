@@ -14,7 +14,7 @@ let state = {
   currentPollId: null,
   lastResultsId: null,
   resultsShown: false,
-  lastShrekId: null
+  shownShrekIds: []
 };
 
 function saveState() {
@@ -236,12 +236,19 @@ function checkShrek() {
   })
   .then(r => r.json())
   .then(data => {
-    if (!data.shrek) return;
-    if (state.lastShrekId === data.shrek.id) return;
+    const list = data.shreks || [];
+    // Показываем только те шреки, которые ещё не показывали
+    const unseen = list.filter(s => !state.shownShrekIds.includes(s.id));
+    if (!unseen.length) return;
     
-    state.lastShrekId = data.shrek.id;
+    // Запоминаем показанные (держим не больше 100, чтобы не разрастался список)
+    unseen.forEach(s => state.shownShrekIds.push(s.id));
+    if (state.shownShrekIds.length > 100) {
+      state.shownShrekIds = state.shownShrekIds.slice(-100);
+    }
     saveState();
-    showShrekNotification(data.shrek);
+    
+    unseen.forEach(s => showShrekNotification(s));
   })
   .catch(() => {});
 }
@@ -402,12 +409,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // ============================================
 // 9. Запуск
 // ============================================
-chrome.storage.local.get(['serverIP', 'currentPollId', 'lastResultsId', 'resultsShown', 'lastShrekId'], (result) => {
+chrome.storage.local.get(['serverIP', 'currentPollId', 'lastResultsId', 'resultsShown', 'shownShrekIds'], (result) => {
   // Восстанавливаем состояние после «засыпания» worker'а
   state.currentPollId = result.currentPollId || null;
   state.lastResultsId = result.lastResultsId || null;
   state.resultsShown = !!result.resultsShown;
-  state.lastShrekId = result.lastShrekId || null;
+  state.shownShrekIds = Array.isArray(result.shownShrekIds) ? result.shownShrekIds : [];
   
   if (result.serverIP) {
     SERVER_URL = normalizeServerURL(result.serverIP);

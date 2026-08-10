@@ -5,7 +5,7 @@ const path = require('path');
 
 let clients = [];
 let activePoll = null;
-let activeShrek = null;
+let shreks = []; // очередь всех отправленных шреков, чтобы ни один не потерялся
 
 // Папка с картинками Шрека. Просто добавьте файл сюда — и он будет
 // выбираться рандомно, без изменения кода.
@@ -479,13 +479,16 @@ const server = http.createServer((req, res) => {
         req.on('end', () => {
             try {
                 const data = JSON.parse(body);
-                activeShrek = {
+                const shrek = {
                     id: Date.now().toString() + '_' + Math.random().toString(36).slice(2, 7),
                     sender: data.sender || 'Кто-то',
                     senderId: data.senderId || null,
                     timestamp: new Date().toISOString()
                 };
-                console.log('🟢 ШРЕК ОТПРАВЛЕН! От: ' + activeShrek.sender);
+                shreks.push(shrek);
+                // Держим не более 50 последних шреков, чтобы очередь не разрасталась
+                if (shreks.length > 50) shreks.shift();
+                console.log('🟢 ШРЕК ОТПРАВЛЕН! От: ' + shrek.sender + ' | Всего в очереди: ' + shreks.length);
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ success: true }));
             } catch (e) {
@@ -510,19 +513,20 @@ const server = http.createServer((req, res) => {
                 
                 upsertClient(clientId, data.name, getClientIP(req));
                 
-                // Отправителю не показываем
-                if (!activeShrek || activeShrek.senderId === clientId) {
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ shrek: null }));
-                    return;
-                }
+                // Отдаём ВСЕ шреки за последние 5 минут, кроме своих.
+                // Клиент сам решает, какие ещё не показывал (по id).
+                const cutoff = Date.now() - 5 * 60 * 1000;
+                const visibleShreks = shreks.filter(s => {
+                    if (s.senderId === clientId) return false;
+                    return new Date(s.timestamp).getTime() >= cutoff;
+                });
                 
                 res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ shrek: activeShrek }));
+                res.end(JSON.stringify({ shreks: visibleShreks }));
             } catch (e) {
                 console.error('❌ Ошибка получения шрека:', e);
                 res.writeHead(400);
-                res.end(JSON.stringify({ shrek: null }));
+                res.end(JSON.stringify({ shreks: [] }));
             }
         });
         return;
@@ -594,14 +598,14 @@ setInterval(() => {
     }
 }, 60000);
 
-// Удаление шрека через 5 минут
+// Удаление старых шреков из очереди (старше 5 минут — уже все успели получить)
 setInterval(() => {
-    if (activeShrek) {
-        const age = Date.now() - new Date(activeShrek.timestamp).getTime();
-        if (age > 300000) { // 5 минут
-            console.log('🗑️ Удаляем шрека');
-            activeShrek = null;
-        }
+    const cutoff = Date.now() - 5 * 60 * 1000;
+    const before = shreks.length;
+    shreks = shreks.filter(s => new Date(s.timestamp).getTime() >= cutoff);
+    const removed = before - shreks.length;
+    if (removed > 0) {
+        console.log(`🗑️ Удалено ${removed} старых шреков из очереди`);
     }
 }, 30000);
 
