@@ -12,3 +12,6 @@ node_modules/
 # Системное
 .DS_Store
 Thumbs.db
+
+# Картинки шрека живут на сервере (VPS: /opt/perekur/prikol), в расширении им не место
+prikol/

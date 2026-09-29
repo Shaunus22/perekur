@@ -24,7 +24,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["prikol/*", "icons/*"],
+      "resources": ["icons/*"],
       "matches": ["<all_urls>"]
     }
   ]
