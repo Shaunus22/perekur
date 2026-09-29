@@ -158,6 +158,7 @@ document.addEventListener('DOMContentLoaded', function() {
     callBtn.disabled = true;
     statusDiv.textContent = '📨 Отправляем...';
     statusDiv.className = '';
+    let resetMs = 3000;
 
     const messages = [
       '🎉 Перекур объявлен!',
@@ -167,7 +168,7 @@ document.addEventListener('DOMContentLoaded', function() {
     
     chrome.storage.local.get(['clientName'], (result) => {
       const name = result.clientName || 'Кто-то';
-      
+       
       chrome.runtime.sendMessage({
         action: 'createPoll',
         data: {
@@ -179,8 +180,11 @@ document.addEventListener('DOMContentLoaded', function() {
           statusDiv.textContent = '❌ ' + (response.cancelReason || 'Голосование отменено');
           statusDiv.className = 'status-error';
         } else if (response && response.success) {
-          statusDiv.textContent = '✅ Опрос создан!';
+          // Итоги приходят только когда все проголосовали или прошло 2 минуты,
+          // поэтому сразу предупреждаем, чтобы это не выглядело как поломка.
+          statusDiv.textContent = '✅ Опрос создан! Итоги придут в течение 2 минут';
           statusDiv.className = 'status-ok';
+          resetMs = 8000;
         } else {
           statusDiv.textContent = '❌ Ошибка: ' + (response?.error || 'неизвестная');
           statusDiv.className = 'status-error';
@@ -192,7 +196,7 @@ document.addEventListener('DOMContentLoaded', function() {
             statusDiv.textContent = 'Готов к работе';
             statusDiv.className = '';
           }
-        }, 3000);
+        }, resetMs);
       });
     });
   });

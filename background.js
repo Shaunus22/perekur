@@ -22,6 +22,25 @@ function saveState() {
 }
 
 // ============================================
+// 0. Отчёт на сервер: что расширение реально показало
+// ============================================
+// По этому журналу на сервере видно, дошло ли сообщение до клиента
+// и что он с ним сделал — даже если человек не заметил.
+function reportEvent(event, detail) {
+  if (!SERVER_URL || !clientId) return;
+  fetch(`${SERVER_URL}/client-log`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      clientId: clientId,
+      name: currentName || 'без имени',
+      event: event,
+      detail: detail || ''
+    })
+  }).catch(() => {});
+}
+
+// ============================================
 // 1. Получение ID клиента
 // ============================================
 function getClientId() {
@@ -181,6 +200,7 @@ function showPollNotification(poll) {
       return;
     }
     console.log('✅ Уведомление опроса показано (ID:', poll.id, ')');
+    reportEvent('📨 показал призыв на перекур', poll.sender);
     
     // Убираем уведомление через 60 секунд, если не проголосовали
     setTimeout(() => chrome.notifications.clear(id), 60000);
@@ -234,6 +254,7 @@ function showResultsNotification(results, poll) {
       return;
     }
     console.log('✅ Уведомление результатов показано');
+    reportEvent('📊 показал итоги голосования', `${results.yes || 0} за / ${results.no || 0} против`);
     
     // Убираем уведомление через 30 секунд
     setTimeout(() => chrome.notifications.clear(id), 30000);
@@ -289,9 +310,11 @@ function showShrekNotification(shrek) {
   }, () => {
     if (chrome.runtime.lastError) {
       console.log('⚠️ Ошибка открытия окна шрека:', chrome.runtime.lastError.message);
+      reportEvent('❌ окно шрека НЕ открылось', chrome.runtime.lastError.message);
       return;
     }
     console.log('🟢 Окно Шрека открыто');
+    reportEvent('👹 показал окно шрека', shrek.sender);
   });
 }
 
@@ -360,10 +383,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   
   // Создание опроса
   if (request.action === 'createPoll') {
-    // Сбрасываем флаги перед созданием нового опроса
+    // Сбрасываем только id опроса. Флаги показанных итогов НЕ трогаем:
+    // resultsId уникален для каждого завершения, и если сбросить их здесь,
+    // то после создания нового опроса клиент снова получил бы из архива
+    // итоги старого опроса, в котором он голосовал.
     state.currentPollId = null;
-    state.lastResultsId = null;
-    state.resultsShown = false;
     saveState();
     
     fetch(`${SERVER_URL}/create-poll`, {

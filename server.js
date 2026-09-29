@@ -7,6 +7,14 @@ let clients = [];
 let activePoll = null;
 let shreks = []; // очередь всех отправленных шреков, чтобы ни один не потерялся
 
+// Архив завершённых опросов. Без него итоги пропадали бы в двух случаях:
+//  1) клиент опоздал забрать их (опрос идёт раз в 30 сек);
+//  2) кто-то создал новый опрос, пока старый ещё не закончился —
+//     activePoll перезаписывается, и результаты старого становилось негде взять.
+let finishedPolls = [];
+const FINISHED_TTL = 15 * 60 * 1000; // храним итоги 15 минут
+const FINISHED_MAX = 10;             // не больше 10 последних опросов
+
 // Папка с картинками Шрека. Просто добавьте файл сюда — и он будет
 // выбираться рандомно, без изменения кода.
 const SHREK_IMAGE_DIR = path.join(__dirname, 'prikol');
@@ -88,9 +96,39 @@ function getRandomImage() {
     return images[Math.floor(Math.random() * images.length)];
 }
 
+// ============================================
+// Архив завершённых опросов
+// ============================================
+
+// Кладёт опрос в архив, чтобы его итоги ещё можно было забрать,
+// даже если активный опрос уже перезаписан новым.
+function archivePoll(poll) {
+    if (!poll || !poll.ended || !poll.results) return;
+    if (finishedPolls.some(p => p.id === poll.id)) return;
+
+    finishedPolls.push(poll);
+    const now = Date.now();
+    finishedPolls = finishedPolls.filter(p => now - new Date(p.endedAt || p.timestamp).getTime() <= FINISHED_TTL);
+    if (finishedPolls.length > FINISHED_MAX) finishedPolls = finishedPolls.slice(-FINISHED_MAX);
+}
+
+// Какой опрос показать клиенту: сначала текущий, потом архив — от свежих к старым.
+// Возвращает null, если клиент не голосовал и не был инициатором ни в одном из них.
+function findResultsFor(clientId) {
+    const candidates = [];
+    if (activePoll) candidates.push(activePoll);
+    for (let i = finishedPolls.length - 1; i >= 0; i--) candidates.push(finishedPolls[i]);
+
+    for (const poll of candidates) {
+        if (!poll || !poll.ended || !poll.results) continue;
+        if (poll.voters.indexOf(clientId) === -1 && poll.senderId !== clientId) continue;
+        return poll;
+    }
+    return null;
+}
+
 function endPoll() {
     if (!activePoll || activePoll.ended) return;
-    
     const yesCount = Object.values(activePoll.votes).filter(v => v === 'yes').length;
     const noCount = Object.values(activePoll.votes).filter(v => v === 'no').length;
     
@@ -109,6 +147,7 @@ function endPoll() {
     }
     
     activePoll.ended = true;
+    activePoll.endedAt = new Date().toISOString();
     activePoll.results = {
         resultsId: Date.now().toString() + '_' + Math.random().toString(36).slice(2, 6), // Уникальный ID для результатов
         yes: yesCount,
@@ -119,6 +158,8 @@ function endPoll() {
         noVoters: noVoters,
         timestamp: new Date().toISOString()
     };
+    
+    archivePoll(activePoll);
     
     console.log('========================================');
     console.log('📊 ИТОГИ ГОЛОСОВАНИЯ!');
@@ -210,6 +251,9 @@ const server = http.createServer((req, res) => {
                     console.log('⚠️ Завершаем старый опрос');
                     endPoll();
                 }
+                // Если старый опрос уже был завершён, но его итоги ещё не забрали —
+                // сохраняем в архив, иначе они пропадут при перезаписи activePoll ниже.
+                archivePoll(activePoll);
                 
                 // Создаем новый опрос
                 activePoll = {
@@ -247,6 +291,7 @@ const server = http.createServer((req, res) => {
                 if (onlineOthers === 0) {
                     activePoll.ended = true;
                     activePoll.cancelled = true;
+                    activePoll.endedAt = new Date().toISOString();
                     activePoll.cancelReason = 'В опросе только 1 человек — голосование отменено';
                     activePoll.results = {
                         resultsId: Date.now().toString() + '_' + Math.random().toString(36).slice(2, 6),
@@ -255,6 +300,7 @@ const server = http.createServer((req, res) => {
                         sender: activePoll.sender,
                         timestamp: new Date().toISOString()
                     };
+                    archivePoll(activePoll);
                     console.log('========================================');
                     console.log('❌ ОПРОС ОТМЕНЁН: только 1 человек (отправитель)');
                     console.log(`📝 От: ${activePoll.sender}`);
@@ -437,41 +483,31 @@ const server = http.createServer((req, res) => {
                 
                 upsertClient(clientId, data.name, getClientIP(req));
                 
-                if (!activePoll) {
+                // Ищем самый свежий завершённый опрос, к которому у клиента есть отношение
+                // (голосовал или сам создавал). Архив спасает, когда клиент опоздал
+                // или активный опрос уже перезаписан новым.
+                const poll = findResultsFor(clientId);
+                
+                if (!poll) {
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ results: null }));
                     return;
                 }
                 
-                // Проверяем, голосовал ли клиент ИЛИ является ли отправителем
-                const hasVoted = activePoll.voters.includes(clientId);
-                const isSender = activePoll.senderId === clientId;
-                
-                // Если клиент не голосовал и не отправитель - не показываем результаты
-                if (!hasVoted && !isSender) {
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ results: null }));
-                    return;
-                }
-                
-                // Если опрос еще не завершен
-                if (!activePoll.ended) {
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ results: null }));
-                    return;
-                }
+                const hasVoted = poll.voters.indexOf(clientId) !== -1;
+                const isSender = poll.senderId === clientId;
                 
                 // Опрос завершен - отправляем результаты
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ 
-                    results: activePoll.results,
+                    results: poll.results,
                     poll: {
-                        id: activePoll.id,
-                        message: activePoll.message,
-                        sender: activePoll.sender,
-                        timestamp: activePoll.timestamp,
-                        image: activePoll.image,
-                        userVote: hasVoted ? activePoll.votes[clientId] : null,
+                        id: poll.id,
+                        message: poll.message,
+                        sender: poll.sender,
+                        timestamp: poll.timestamp,
+                        image: poll.image,
+                        userVote: hasVoted ? poll.votes[clientId] : null,
                         isSender: isSender
                     }
                 }));
@@ -565,6 +601,29 @@ const server = http.createServer((req, res) => {
     }
 
     // ==========================================
+    // 9.5. ЖУРНАЛ СОБЫТИЙ ОТ КЛИЕНТОВ
+    // ==========================================
+    // Расширение сообщает, что реально показало на экране (окно шрека открыто,
+    // уведомление показано и т.д.). По этому журналу видно, дошёл ли шрек
+    // до конкретного клиента, даже если он это не заметил.
+    if (req.method === 'POST' && req.url === '/client-log') {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => {
+            try {
+                const d = JSON.parse(body);
+                const who = d.name || 'без имени';
+                console.log('🖥️ ' + who + ' → ' + (d.event || '?') + (d.detail ? ' | ' + d.detail : ''));
+            } catch (e) {
+                console.error('❌ Ошибка разбора client-log:', e.message);
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+        });
+        return;
+    }
+
+    // ==========================================
     // 10. СЛУЧАЙНАЯ КАРТИНКА ШРЕКА
     // ==========================================
     if (req.method === 'GET' && req.url.startsWith('/shrek-image')) {
@@ -608,12 +667,18 @@ setInterval(() => {
     }
 }, 30000);
 
-// Удаление завершенного опроса через 3 минуты (время на получение результатов при цикле опроса 30с)
+// Убираем завершенный опрос из активных через 3 минуты ПОСЛЕ ЗАВЕРШЕНИЯ.
+// Считать надо от endedAt, а не от timestamp: иначе опрос, дожидавшийся
+// 2-минутного таймаута, жил после итогов всего 60 секунд — клиент с опросом
+// раз в 30 секунд мог не успеть забрать результаты.
+// Сами итоги при этом остаются в архиве finishedPolls.
 setInterval(() => {
     if (activePoll && activePoll.ended) {
-        const age = Date.now() - new Date(activePoll.timestamp).getTime();
+        const endedAt = activePoll.endedAt || activePoll.timestamp;
+        const age = Date.now() - new Date(endedAt).getTime();
         if (age > 180000) { // 3 минуты после завершения
-            console.log('🗑️ Удаляем завершенный опрос');
+            archivePoll(activePoll);
+            console.log('🗑️ Убираем завершенный опрос из активных (итоги в архиве)');
             activePoll = null;
         }
     }
