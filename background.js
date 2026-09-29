@@ -14,8 +14,12 @@ let state = {
   currentPollId: null,
   lastResultsId: null,
   resultsShown: false,
-  shownShrekIds: []
+  shownShrekIds: [],
+  shrekAttempts: {} // { id шрека: сколько раз не удалось открыть окно }
 };
+
+// Сколько раз пробуем открыть окно шрека, прежде чем сдаться
+const SHREK_MAX_ATTEMPTS = 3;
 
 function saveState() {
   chrome.storage.local.set(state);
@@ -276,20 +280,43 @@ function checkShrek() {
   .then(r => r.json())
   .then(data => {
     const list = data.shreks || [];
-    // Показываем только те шреки, которые ещё не показывали
-    const unseen = list.filter(s => !state.shownShrekIds.includes(s.id));
+    // Показываем только те шреки, которые ещё не показали (или которые
+    // не удалось показать — тогда предпримем ещё попытку).
+    const unseen = list.filter(s =>
+      !state.shownShrekIds.includes(s.id) &&
+      (state.shrekAttempts[s.id] || 0) < SHREK_MAX_ATTEMPTS
+    );
     if (!unseen.length) return;
-    
-    // Запоминаем показанные (держим не больше 100, чтобы не разрастался список)
-    unseen.forEach(s => state.shownShrekIds.push(s.id));
-    if (state.shownShrekIds.length > 100) {
-      state.shownShrekIds = state.shownShrekIds.slice(-100);
-    }
-    saveState();
     
     unseen.forEach(s => showShrekNotification(s));
   })
-  .catch(() => {});
+  .catch(err => {
+    // Раньше здесь стоял пустой catch, и любая ошибка исчезала молча —
+    // из-за этого было невозможно понять, почему окно не открывается.
+    console.log('⚠️ Ошибка проверки шреков:', err && err.message);
+    reportEvent('❌ ошибка запроса шреков', err && err.message);
+  });
+}
+
+// Помечает шрек показанным, но только ПОСЛЕ того, как окно реально открылось.
+// Раньше id добавлялся в список заранее, и одна неудача навсегда теряла шрек.
+function markShrekShown(shrek) {
+  if (!state.shownShrekIds.includes(shrek.id)) state.shownShrekIds.push(shrek.id);
+  if (state.shownShrekIds.length > 100) state.shownShrekIds = state.shownShrekIds.slice(-100);
+  delete state.shrekAttempts[shrek.id];
+  saveState();
+}
+
+// Счётчик неудачных попыток: чтобы совсем безнадёжный шрек не мучил вечно.
+function countShrekAttempt(shrek, giveUp) {
+  state.shrekAttempts[shrek.id] = (state.shrekAttempts[shrek.id] || 0) + 1;
+  if (giveUp) {
+    // Сдались — считаем шрек показанным, чтобы не повторялся бесконечно.
+    if (!state.shownShrekIds.includes(shrek.id)) state.shownShrekIds.push(shrek.id);
+    if (state.shownShrekIds.length > 100) state.shownShrekIds = state.shownShrekIds.slice(-100);
+    delete state.shrekAttempts[shrek.id];
+  }
+  saveState();
 }
 
 function showShrekNotification(shrek) {
@@ -299,23 +326,54 @@ function showShrekNotification(shrek) {
   const imageUrl = SERVER_URL + '/shrek-image?t=' + Date.now();
   const title = shrek.sender + ' зовет на перекур!';
   const url = 'shrek.html?img=' + encodeURIComponent(imageUrl) + '&title=' + encodeURIComponent(title);
-  
-  chrome.windows.create({
+
+  const basic = {
     url: url,
     type: 'popup',
     width: 420,
     height: 420,
-    focused: true,
-    alwaysOnTop: true // поверх всех окон (только Windows 10+)
-  }, () => {
-    if (chrome.runtime.lastError) {
-      console.log('⚠️ Ошибка открытия окна шрека:', chrome.runtime.lastError.message);
-      reportEvent('❌ окно шрека НЕ открылось', chrome.runtime.lastError.message);
-      return;
-    }
-    console.log('🟢 Окно Шрека открыто');
-    reportEvent('👹 показал окно шрека', shrek.sender);
-  });
+    focused: true
+  };
+
+  // alwaysOnTop работает только на Windows 10+. Если Chrome его не принимает,
+  // открываем окно без него — лучше окно не поверх всего, чем никакого окна.
+  try {
+    chrome.windows.create({ ...basic, alwaysOnTop: true }, () => {
+      const err = chrome.runtime.lastError;
+      if (!err) return onShrekWindowOpened(shrek);
+      if (/alwaysOnTop/i.test(err.message)) {
+        try {
+          chrome.windows.create(basic, () => {
+            if (chrome.runtime.lastError) onShrekWindowFailed(shrek, chrome.runtime.lastError.message);
+            else onShrekWindowOpened(shrek, 'без alwaysOnTop');
+          });
+        } catch (e) {
+          onShrekWindowFailed(shrek, e.message);
+        }
+      } else {
+        onShrekWindowFailed(shrek, err.message);
+      }
+    });
+  } catch (e) {
+    // Chrome может выбросить исключение сразу, ещё до вызова колбэка.
+    console.log('⚠️ Исключение при открытии окна шрека:', e.message);
+    reportEvent('❌ исключение при открытии окна', e.message);
+    countShrekAttempt(shrek, true);
+  }
+}
+
+function onShrekWindowOpened(shrek, note) {
+  console.log('🟢 Окно Шрека открыто');
+  markShrekShown(shrek);
+  reportEvent('👹 показал окно шрека', note ? shrek.sender + ' (' + note + ')' : shrek.sender);
+}
+
+function onShrekWindowFailed(shrek, message) {
+  const attempts = (state.shrekAttempts[shrek.id] || 0) + 1;
+  console.log('⚠️ Ошибка открытия окна шрека:', message);
+  reportEvent('❌ окно шрека НЕ открылось', `попытка ${attempts}: ${message}`);
+  // 3 неудачи подряд — больше не мучаемся, но сообщаем на сервер.
+  countShrekAttempt(shrek, attempts >= SHREK_MAX_ATTEMPTS);
 }
 
 // ============================================
@@ -451,12 +509,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // ============================================
 // 9. Запуск
 // ============================================
-chrome.storage.local.get(['serverIP', 'currentPollId', 'lastResultsId', 'resultsShown', 'shownShrekIds'], (result) => {
+chrome.storage.local.get(['serverIP', 'currentPollId', 'lastResultsId', 'resultsShown', 'shownShrekIds', 'shrekAttempts'], (result) => {
   // Восстанавливаем состояние после «засыпания» worker'а
   state.currentPollId = result.currentPollId || null;
   state.lastResultsId = result.lastResultsId || null;
   state.resultsShown = !!result.resultsShown;
   state.shownShrekIds = Array.isArray(result.shownShrekIds) ? result.shownShrekIds : [];
+  state.shrekAttempts = result.shrekAttempts && typeof result.shrekAttempts === 'object' ? result.shrekAttempts : {};
   
   if (result.serverIP) {
     SERVER_URL = normalizeServerURL(result.serverIP);
