@@ -335,31 +335,26 @@ function showShrekNotification(shrek) {
     focused: true
   };
 
-  // alwaysOnTop работает только на Windows 10+. Если Chrome его не принимает,
+  // alwaysOnTop поддерживается не всеми версиями Chrome. Если он не принят,
   // открываем окно без него — лучше окно не поверх всего, чем никакого окна.
-  try {
-    chrome.windows.create({ ...basic, alwaysOnTop: true }, () => {
-      const err = chrome.runtime.lastError;
-      if (!err) return onShrekWindowOpened(shrek);
-      if (/alwaysOnTop/i.test(err.message)) {
-        try {
-          chrome.windows.create(basic, () => {
-            if (chrome.runtime.lastError) onShrekWindowFailed(shrek, chrome.runtime.lastError.message);
-            else onShrekWindowOpened(shrek, 'без alwaysOnTop');
-          });
-        } catch (e) {
-          onShrekWindowFailed(shrek, e.message);
-        }
-      } else {
+  // Chrome сообщает о таком ДВУМЯ способами: бросает исключение сразу
+  // ("Unexpected property") либо возвращает chrome.runtime.lastError.
+  // Поэтому проверяем оба.
+  const tryCreate = (options, canFallback) => {
+    try {
+      chrome.windows.create(options, () => {
+        const err = chrome.runtime.lastError;
+        if (!err) return onShrekWindowOpened(shrek, canFallback ? null : 'без alwaysOnTop');
+        if (canFallback && /alwaysOnTop/i.test(err.message)) return tryCreate(basic, false);
         onShrekWindowFailed(shrek, err.message);
-      }
-    });
-  } catch (e) {
-    // Chrome может выбросить исключение сразу, ещё до вызова колбэка.
-    console.log('⚠️ Исключение при открытии окна шрека:', e.message);
-    reportEvent('❌ исключение при открытии окна', e.message);
-    countShrekAttempt(shrek, true);
-  }
+      });
+    } catch (e) {
+      if (canFallback && /alwaysOnTop/i.test(e.message)) return tryCreate(basic, false);
+      onShrekWindowFailed(shrek, e.message);
+    }
+  };
+
+  tryCreate({ ...basic, alwaysOnTop: true }, true);
 }
 
 function onShrekWindowOpened(shrek, note) {

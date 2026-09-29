@@ -28,6 +28,21 @@ try {
       const left = Math.round((scr.availLeft || 0) + (scr.availWidth - w) / 2);
       const top = Math.round((scr.availTop || 0) + (scr.availHeight - h) / 2);
       chrome.windows.update(win.id, { left, top, focused: true });
+
+      // alwaysOnTop недоступен в этой версии Chrome, поэтому вместо «поверх
+      // всех окон» периодически подсвечиваем окно в панели задач — так шрек
+      // не потеряется среди других окон. drawAttention не забирает фокус.
+      let pulses = 0;
+      const pulse = setInterval(() => {
+        if (pulses >= 4) { clearInterval(pulse); return; }
+        pulses++;
+        try {
+          chrome.windows.update(win.id, { drawAttention: true }, () => {
+            // намеренно игнорируем lastError
+            void chrome.runtime.lastError;
+          });
+        } catch (e) { /* не критично */ }
+      }, 2500);
     });
   }
 } catch (e) {
