@@ -1,10 +1,10 @@
 // Общая конфигурация расширения «Перекур»
 const SERVER_PORT = 3000;
 
-// GitHub-репозиторий для проверки версии
+// GitHub-репозиторий для проверки версии.
+// Внимание: сам адрес version.txt здесь НЕ нужен — popup.js запрашивает
+// его через GitHub API (api.github.com), а не через raw.githubusercontent.
 const DEFAULT_GITHUB_REPO = 'Shaunus22/perekur';
-const GITHUB_BRANCH = 'main';
-const GITHUB_VERSION_URL = `https://raw.githubusercontent.com/${DEFAULT_GITHUB_REPO}/${GITHUB_BRANCH}/version.txt`;
 
 // Превращает введённый адрес в полный URL сервера:
 //  192.168.1.132           -> http://192.168.1.132:3000
