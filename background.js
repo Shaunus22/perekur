@@ -284,7 +284,8 @@ function showShrekNotification(shrek) {
     type: 'popup',
     width: 420,
     height: 420,
-    focused: true
+    focused: true,
+    alwaysOnTop: true // поверх всех окон (только Windows 10+)
   }, () => {
     if (chrome.runtime.lastError) {
       console.log('⚠️ Ошибка открытия окна шрека:', chrome.runtime.lastError.message);
