@@ -57,6 +57,40 @@
       padding: 5px;
       background: #e8e8e8;
       border-radius: 10px;
+      cursor: pointer;
+      user-select: none;
+    }
+    #clientsCount:hover {
+      background: #dcdcdc;
+    }
+    #clientsToggle {
+      font-size: 10px;
+    }
+    #clientsList {
+      margin-top: 5px;
+      padding: 6px 8px;
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 10px;
+      font-size: 12px;
+      text-align: left;
+      max-height: 150px;
+      overflow-y: auto;
+    }
+    #clientsList.hidden {
+      display: none;
+    }
+    .client-row {
+      padding: 2px 0;
+      color: #444;
+    }
+    .client-row.me {
+      font-weight: bold;
+      color: #4CAF50;
+    }
+    .client-empty {
+      color: #999;
+      font-style: italic;
     }
     .field {
       margin-bottom: 8px;
@@ -135,7 +169,8 @@
     </div>
     <button id="callBtn">Позвать на перекур</button>
     <div id="status">Готов к работе</div>
-    <div id="clientsCount">👥 В сети: 0</div>
+    <div id="clientsCount" title="Нажмите, чтобы показать список">👥 В сети: 0 <span id="clientsToggle">▼</span></div>
+    <div id="clientsList" class="hidden"></div>
     <div class="divider"></div>
     <div class="version-row">
       <span>Версия: <b id="currentVersion">–</b></span>

@@ -229,9 +229,14 @@ const server = http.createServer((req, res) => {
     // 2. СПИСОК КЛИЕНТОВ
     // ==========================================
     if (req.method === 'GET' && req.url === '/clients') {
+        // Отдаём только тех, кто реально онлайн (90 секунд), иначе в списке
+        // всплывали бы люди, которые закрыли браузер, но недавно заходили.
+        const now = Date.now();
+        const online = clients.filter(c => now - c.lastSeen <= 90000);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ 
-            clients: clients.map(c => ({ id: c.id, name: c.name }))
+            onlineCount: online.length,
+            clients: online.map(c => ({ id: c.id, name: c.name }))
         }));
         return;
     }

@@ -7,13 +7,53 @@ document.addEventListener('DOMContentLoaded', function() {
   const checkBtn = document.getElementById('checkBtn');
   const currentVersionSpan = document.getElementById('currentVersion');
   const updateStatusDiv = document.getElementById('updateStatus');
+  const clientsList = document.getElementById('clientsList');
 
   const currentVersion = chrome.runtime.getManifest().version;
   currentVersionSpan.textContent = currentVersion;
 
   let SERVER_URL = '';
+  let clientsOpen = false;
+  let myClientId = null;
 
-  chrome.storage.local.get(['serverIP', 'clientName'], function(result) {
+  // Показать/спрятать список тех, кто онлайн
+  clientsSpan.addEventListener('click', function() {
+    clientsOpen = !clientsOpen;
+    clientsList.classList.toggle('hidden', !clientsOpen);
+    const arrow = document.getElementById('clientsToggle');
+    if (arrow) arrow.textContent = clientsOpen ? '▲' : '▼';
+    if (clientsOpen) loadOnlineList();
+  });
+
+  function loadOnlineList() {
+    if (!SERVER_URL) return;
+    fetch(`${SERVER_URL}/clients`)
+      .then(response => response.json())
+      .then(data => {
+        const list = (data.clients || []).slice()
+          .sort((a, b) => String(a.name).localeCompare(String(b.name), 'ru'));
+        if (!list.length) {
+          clientsList.innerHTML = '<div class="client-empty">сейчас никого нет</div>';
+          return;
+        }
+        clientsList.innerHTML = '';
+        list.forEach(c => {
+          const isMe = c.id === myClientId;
+          const row = document.createElement('div');
+          row.className = 'client-row' + (isMe ? ' me' : '');
+          // Имя вставляем через textContent, а не innerHTML — чтобы спецсимволы
+          // в имени не превратились в HTML
+          row.textContent = (isMe ? '⭐ ' : '') + c.name + (isMe ? ' — это вы' : '');
+          clientsList.appendChild(row);
+        });
+      })
+      .catch(() => {
+        clientsList.innerHTML = '<div class="client-empty">не удалось получить список</div>';
+      });
+  }
+
+  chrome.storage.local.get(['serverIP', 'clientName', 'clientId'], function(result) {
+    myClientId = result.clientId || null;
     if (result.serverIP) {
       serverIPInput.value = result.serverIP;
       SERVER_URL = normalizeServerURL(result.serverIP);
@@ -144,9 +184,9 @@ document.addEventListener('DOMContentLoaded', function() {
     fetch(`${SERVER_URL}/status`)
       .then(response => response.json())
       .then(data => {
-        statusDiv.textContent = `✅ Сервер активен (${data.onlineCount ?? data.clients} онлайн)`;
+        statusDiv.textContent = '✅ Сервер активен';
         statusDiv.className = 'status-ok';
-        clientsSpan.textContent = `👥 В сети: ${data.onlineCount ?? data.clients}`;
+        clientsSpan.innerHTML = `👥 В сети: ${data.onlineCount ?? data.clients ?? 0} <span id="clientsToggle">${clientsOpen ? '▲' : '▼'}</span>`;
       })
       .catch(() => {
         statusDiv.textContent = '⚠️ Сервер недоступен!';
@@ -201,7 +241,11 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   });
 
-  setInterval(checkStatus, 10000);
+  setInterval(function() {
+    checkStatus();
+    // Пока список раскрыт, подтягиваем имена — кто-то мог зайти/выйти
+    if (clientsOpen) loadOnlineList();
+  }, 10000);
 
   document.getElementById('shrekImg').addEventListener('click', function() {
     chrome.storage.local.get(['clientName'], (result) => {

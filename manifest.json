@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Перекур",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "description": "Позови коллег на перекур!",
   "icons": {
     "128": "icons/icon128.png"
