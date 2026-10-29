@@ -1,6 +1,6 @@
 {
   "name": "perekur",
-  "version": "1.4.4",
+  "version": "1.4.7",
   "description": "Сервер для расширения «Перекур»",
   "main": "server.js",
   "scripts": {

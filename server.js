@@ -7,6 +7,46 @@ let clients = [];
 let activePoll = null;
 let shreks = []; // очередь всех отправленных шреков, чтобы ни один не потерялся
 
+// ============================================
+// Доступ: общий токен + белый список Origin
+// ============================================
+// Токен НЕОБЯЗАТЕЛЕН. Если PEREKUR_TOKEN не задан, сервер ведёт себя как
+// раньше: принимает всех, и в настройках расширения токен можно не вписывать.
+// Он нужен только если сервер открыт в интернет и вы хотите его закрыть.
+const TOKEN = String(process.env.PEREKUR_TOKEN || '').trim();
+// Разрешённые источники/домены через запятую, например:
+//   PEREKUR_ALLOWED_ORIGINS=https://perekur.example.org,chrome-extension://abcdef...
+const ALLOWED_ORIGINS = String(process.env.PEREKUR_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(s => s.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
+
+function originAllowed(origin) {
+    // Расширение шлёт chrome-extension://<id> — его идентификатор заранее не известен,
+    // поэтому такие источники пропускаем. Это безопасно: обычный сайт не может
+    // подделать Origin, а когда задан токен, без него доступ всё равно закрыт.
+    if (!origin || origin === 'null') return false;
+    if (origin.startsWith('chrome-extension://') || origin.startsWith('moz-extension://')) return true;
+    if (!ALLOWED_ORIGINS.length) {
+        // Белый список не настроен — режим «как раньше»: простые запросы с любых
+        // сайтов разрешены. Так расширение работает без настройки вообще.
+        // Если хотите закрыть сервер от чужих сайтов, задайте
+        // PEREKUR_ALLOWED_ORIGINS (тогда сработает ветка ниже).
+        return true;
+    }
+    return ALLOWED_ORIGINS.includes(origin);
+}
+
+// Проверка токена: заголовок X-Perekur-Token либо ?token= в query
+// (query нужен /shrek-image: <img> не умеет заголовки).
+function tokenOk(req, url) {
+    if (!TOKEN) return true;
+    const header = req.headers['x-perekur-token'];
+    if (header && header === TOKEN) return true;
+    const fromQuery = url.searchParams.get('token');
+    return !!fromQuery && fromQuery === TOKEN;
+}
+
 // Архив завершённых опросов. Без него итоги пропадали бы в двух случаях:
 //  1) клиент опоздал забрать их (опрос идёт раз в 30 сек);
 //  2) кто-то создал новый опрос, пока старый ещё не закончился —
@@ -14,6 +54,62 @@ let shreks = []; // очередь всех отправленных шреко�
 let finishedPolls = [];
 const FINISHED_TTL = 15 * 60 * 1000; // храним итоги 15 минут
 const FINISHED_MAX = 10;             // не больше 10 последних опросов
+
+// ============================================
+// Сохранение состояния на диск
+// ============================================
+// Без этого перезапуск сервера (обновление, падение, `Restart=always`)
+// стирал активный опрос и итоги, которые клиенты ещё не успели забрать.
+const STATE_FILE = process.env.PEREKUR_STATE_FILE || path.join(__dirname, 'state.json');
+let saveTimer = null;
+
+function saveStateSoon() {
+    if (saveTimer) return;
+    saveTimer = setTimeout(() => {
+        saveTimer = null;
+        saveStateNow();
+    }, 500);
+}
+
+function saveStateNow() {
+    try {
+        const data = JSON.stringify({ savedAt: Date.now(), clients, activePoll, shreks, finishedPolls });
+        fs.writeFileSync(STATE_FILE + '.tmp', data);
+        fs.renameSync(STATE_FILE + '.tmp', STATE_FILE);
+    } catch (e) {
+        console.error('❌ Не удалось сохранить состояние:', e.message);
+    }
+}
+
+function loadState() {
+    let raw;
+    try {
+        raw = fs.readFileSync(STATE_FILE, 'utf8');
+    } catch (e) {
+        return; // файла ещё нет — стартуем с чистого листа
+    }
+    try {
+        const data = JSON.parse(raw);
+        clients = Array.isArray(data.clients) ? data.clients : [];
+        shreks = Array.isArray(data.shreks) ? data.shreks : [];
+        finishedPolls = Array.isArray(data.finishedPolls) ? data.finishedPolls : [];
+
+        // Опрос, который уже «устарел» по таймаутам, восстанавливать незачем
+        if (data.activePoll && !data.activePoll.ended) {
+            const age = Date.now() - new Date(data.activePoll.timestamp).getTime();
+            if (age < 120000) activePoll = data.activePoll;
+        } else if (data.activePoll) {
+            const endedAt = new Date(data.activePoll.endedAt || data.activePoll.timestamp).getTime();
+            if (Date.now() - endedAt < 180000) activePoll = data.activePoll;
+        }
+        console.log(`💾 Состояние восстановлено: клиентов ${clients.length}, итогов ${finishedPolls.length}` +
+            (activePoll ? ', активный опрос есть' : ''));
+    } catch (e) {
+        console.error('❌ Файл состояния повреждён, стартуем с чистого листа:', e.message);
+    }
+}
+
+loadState();
 
 // Папка с картинками Шрека. Просто добавьте файл сюда — и он будет
 // выбираться рандомно, без изменения кода.
@@ -71,6 +167,7 @@ function upsertClient(clientId, name, ip) {
         if (name) client.name = name;
         if (ip) client.ip = ip;
         client.lastSeen = Date.now();
+        saveStateSoon();
         return client;
     }
     const newClient = {
@@ -81,6 +178,7 @@ function upsertClient(clientId, name, ip) {
         lastSeen: Date.now()
     };
     clients.push(newClient);
+    saveStateSoon();
     return newClient;
 }
 
@@ -110,6 +208,7 @@ function archivePoll(poll) {
     const now = Date.now();
     finishedPolls = finishedPolls.filter(p => now - new Date(p.endedAt || p.timestamp).getTime() <= FINISHED_TTL);
     if (finishedPolls.length > FINISHED_MAX) finishedPolls = finishedPolls.slice(-FINISHED_MAX);
+    saveStateSoon();
 }
 
 // Какой опрос показать клиенту: сначала текущий, потом архив — от свежих к старым.
@@ -177,17 +276,53 @@ function endPoll() {
 const server = http.createServer((req, res) => {
     // Логируем запросы для отладки
     console.log(`📨 ${req.method} ${req.url}`);
-    
-    // Настройка CORS для локальной сети
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+    let url;
+    try {
+        url = new URL(req.url, 'http://localhost');
+    } catch (e) {
+        url = new URL('http://localhost/');
+    }
+
+    // CORS: не «*», а только разрешённые источники
+    const origin = req.headers.origin;
+    if (origin && originAllowed(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Vary', 'Origin');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Perekur-Token');
+    }
 
     if (req.method === 'OPTIONS') {
-        res.writeHead(200);
+        if (origin && !originAllowed(origin)) {
+            res.writeHead(403);
+            res.end();
+            return;
+        }
+        res.writeHead(204);
         res.end();
         return;
     }
+
+    // Запрос из браузера с чужого сайта — отклоняем сразу
+    if (origin && !originAllowed(origin)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Origin not allowed' }));
+        return;
+    }
+
+    // Токен: защищает все API-роуты. OPTIONS и 404 пропускаем как есть.
+    if (!tokenOk(req, url)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Invalid or missing token' }));
+        return;
+    }
+
+    req.url = url.pathname + url.search;
+    handle(req, res);
+});
+
+function handle(req, res) {
 
     // ==========================================
     // 1. РЕГИСТРАЦИЯ КЛИЕНТА
@@ -293,7 +428,9 @@ const server = http.createServer((req, res) => {
                     Date.now() - c.lastSeen <= 90000
                 ).length;
 
-                if (onlineOthers === 0) {
+                // Не отменяем дважды: выше мог сработать endPoll() и уже выставить итоги
+                const cancelledNow = onlineOthers === 0 && !activePoll.ended;
+                if (cancelledNow) {
                     activePoll.ended = true;
                     activePoll.cancelled = true;
                     activePoll.endedAt = new Date().toISOString();
@@ -317,16 +454,17 @@ const server = http.createServer((req, res) => {
                 console.log(`🆔 ID: ${activePoll.id}`);
                 console.log(`📝 От: ${activePoll.sender}`);
                 console.log(`💬 Сообщение: ${activePoll.message}`);
-                console.log(`👥 Клиентов в сети: ${clients.length}`);
+                console.log(`👥 Клиентов в сети: ${onlineOthers}`);
                 console.log('========================================');
+                saveStateSoon();
                 
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ 
                     success: true, 
                     pollId: activePoll.id,
                     clientsCount: clients.length,
-                    cancelled: activePoll.cancelled || false,
-                    cancelReason: activePoll.cancelReason || null
+                    cancelled: cancelledNow,
+                    cancelReason: cancelledNow ? activePoll.cancelReason : null
                 }));
             } catch (e) {
                 console.error('❌ Ошибка создания опроса:', e);
@@ -561,6 +699,7 @@ const server = http.createServer((req, res) => {
                 shreks.push(shrek);
                 // Держим не более 50 последних шреков, чтобы очередь не разрасталась
                 if (shreks.length > 50) shreks.shift();
+                saveStateSoon();
                 console.log('🟢 ШРЕК ОТПРАВЛЕН! От: ' + shrek.sender + ' | Всего в очереди: ' + shreks.length);
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ success: true }));
@@ -655,7 +794,7 @@ const server = http.createServer((req, res) => {
     // ==========================================
     res.writeHead(404);
     res.end('Not found');
-});
+}
 
 // ============================================
 // Таймеры для автоматического завершения
@@ -685,6 +824,7 @@ setInterval(() => {
             archivePoll(activePoll);
             console.log('🗑️ Убираем завершенный опрос из активных (итоги в архиве)');
             activePoll = null;
+            saveStateSoon();
         }
     }
 }, 5000);
@@ -697,6 +837,7 @@ setInterval(() => {
     const removed = before - clients.length;
     if (removed > 0) {
         console.log(`🗑️ Удалено ${removed} неактивных клиентов`);
+        saveStateSoon();
     }
 }, 60000);
 
@@ -708,6 +849,7 @@ setInterval(() => {
     const removed = before - shreks.length;
     if (removed > 0) {
         console.log(`🗑️ Удалено ${removed} старых шреков из очереди`);
+        saveStateSoon();
     }
 }, 30000);
 
@@ -736,12 +878,30 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log('  7. Опрос удаляется через 3 минуты после завершения');
     console.log('========================================');
     console.log('👥 Ожидаем подключения клиентов...');
+    console.log(TOKEN ? '🔒 Токен задан — запросы без X-Perekur-Token отклоняются' : '⚠️ Токен не задан (PEREKUR_TOKEN) — сервер открыт всем');
+    if (ALLOWED_ORIGINS.length) console.log('🌍 Разрешённые Origin: ' + ALLOWED_ORIGINS.join(', '));
+    console.log(`💾 Файл состояния: ${STATE_FILE}`);
     console.log('Нажмите Ctrl+C для остановки сервера');
     console.log('========================================');
 });
 
 // Обработка завершения
 process.on('SIGINT', () => {
+    saveStateNow();
     console.log('\n👋 Сервер остановлен');
     process.exit();
+});
+
+process.on('SIGTERM', () => {
+    saveStateNow();
+    process.exit();
+});
+
+// Никогда не оставляем незаписанное состояние (аварийное завершение)
+process.on('exit', () => {
+    if (saveTimer) {
+        clearTimeout(saveTimer);
+        saveTimer = null;
+    }
+    saveStateNow();
 });

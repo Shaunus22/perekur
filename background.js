@@ -5,6 +5,12 @@ importScripts('config.js');
 let SERVER_URL = '';
 let clientId = null;
 let currentName = null;
+// Общий токен доступа к серверу (задаётся в настройках расширения и в env сервера)
+let TOKEN = '';
+
+function headers() {
+  return apiHeaders(TOKEN);
+}
 
 const ICON_URL = chrome.runtime.getURL('icons/icon128.png');
 
@@ -34,7 +40,7 @@ function reportEvent(event, detail) {
   if (!SERVER_URL || !clientId) return;
   fetch(`${SERVER_URL}/client-log`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: headers(),
     body: JSON.stringify({
       clientId: clientId,
       name: currentName || 'без имени',
@@ -74,7 +80,7 @@ function registerClient() {
 
       fetch(`${SERVER_URL}/register`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: headers(),
         body: JSON.stringify({ clientId: clientId, name: currentName })
       })
       .then(() => {
@@ -97,7 +103,7 @@ function checkPoll() {
   
   fetch(`${SERVER_URL}/get-poll`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: headers(),
     body: JSON.stringify({ clientId: clientId, name: currentName })
   })
   .then(r => r.json())
@@ -154,7 +160,7 @@ function checkResults() {
   
   fetch(`${SERVER_URL}/get-results`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: headers(),
     body: JSON.stringify({ clientId: clientId, name: currentName })
   })
   .then(r => r.json())
@@ -173,8 +179,25 @@ function checkResults() {
       state.lastResultsId = resultsId;
       state.currentPollId = null;
       saveState();
-      
-      showResultsNotification(data.results, data.poll);
+
+      // Кладём итоги в storage: если попап открыт — красиво покажет их в окне,
+      // если закрыт — покажет при следующем открытии.
+      // Сначала обновляем флаги (попап сбрасывает pendingResultsShown при показе),
+      // и только потом шлём resultsReady — иначе гонка затрёт флаг.
+      chrome.storage.local.set({
+        pendingResults: data.results,
+        pendingResultsPoll: data.poll || null,
+        pendingResultsShown: false
+      }, () => {
+        // Попап может быть открыт прямо сейчас — попробуем разбудить его.
+        // Если попап не открыт, ошибки нет: он покажет итоги при открытии.
+        chrome.runtime.sendMessage({ action: 'resultsReady' }, () => {
+          void chrome.runtime.lastError;
+        });
+        // Подстраховка: если попап открыт, но открыт позже получения сообщения,
+        // уведомление всё равно нужно показать — попап сам проверяет storage.
+        showResultsNotification(data.results, data.poll);
+      });
     }
   })
   .catch(() => {});
@@ -274,7 +297,7 @@ function checkShrek() {
   
   fetch(`${SERVER_URL}/get-shrek`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: headers(),
     body: JSON.stringify({ clientId: clientId, name: currentName })
   })
   .then(r => r.json())
@@ -323,7 +346,9 @@ function showShrekNotification(shrek) {
   // Системные уведомления Chrome не анимируют GIF (показывают первый кадр),
   // поэтому показываем шрека в маленьком всплывающем окне, где GIF проигрывается.
   // cache-buster, чтобы каждая картинка была новой и не кэшировалась.
-  const imageUrl = SERVER_URL + '/shrek-image?t=' + Date.now();
+  // Токен передаём в query: <img> в shrek.html не может задать заголовок.
+  const imageUrl = SERVER_URL + '/shrek-image?t=' + Date.now() +
+    (TOKEN ? '&token=' + encodeURIComponent(TOKEN) : '');
   const title = shrek.sender + ' зовет на перекур!';
   const url = 'shrek.html?img=' + encodeURIComponent(imageUrl) + '&title=' + encodeURIComponent(title);
 
@@ -403,7 +428,7 @@ function sendVote(vote) {
   
   fetch(`${SERVER_URL}/vote`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: headers(),
     body: JSON.stringify({
       clientId: clientId,
       vote: vote,
@@ -445,7 +470,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     
     fetch(`${SERVER_URL}/create-poll`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: headers(),
       body: JSON.stringify({
         sender: request.data.sender,
         senderId: clientId,
@@ -455,7 +480,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     .then(r => r.json())
     .then(data => {
       console.log('✅ Опрос создан!');
-      sendResponse({ success: data.success !== false, pollId: data.pollId, error: data.message });
+      // cancelled/cancelReason важны: сервер отменяет опрос, если кроме
+      // отправителя в сети никого нет, и попап должен сказать об этом.
+      sendResponse({
+        success: data.success !== false,
+        pollId: data.pollId,
+        cancelled: !!data.cancelled,
+        cancelReason: data.cancelReason || null,
+        error: data.message
+      });
     })
     .catch(err => {
       sendResponse({ success: false, error: err.message });
@@ -467,7 +500,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'sendShrek') {
     fetch(`${SERVER_URL}/send-shrek`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: headers(),
       body: JSON.stringify({
         sender: request.data.sender,
         senderId: clientId
@@ -483,14 +516,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
   
-  // Обновление IP сервера из настроек
+  // Обновление адреса сервера / токена из настроек
   if (request.action === 'updateServerURL') {
     const ip = request.data && request.data.serverIP;
+    const token = request.data && request.data.token;
     if (ip) {
       SERVER_URL = normalizeServerURL(ip);
       console.log(`🔌 Сервер изменен: ${SERVER_URL}`);
-      registerClient();
     }
+    if (token !== undefined) {
+      TOKEN = String(token || '').trim();
+    }
+    if (ip || token !== undefined) registerClient();
     sendResponse({ ok: true });
   }
   
@@ -504,13 +541,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // ============================================
 // 9. Запуск
 // ============================================
-chrome.storage.local.get(['serverIP', 'currentPollId', 'lastResultsId', 'resultsShown', 'shownShrekIds', 'shrekAttempts'], (result) => {
+chrome.storage.local.get(['serverIP', 'serverToken', 'currentPollId', 'lastResultsId', 'resultsShown', 'shownShrekIds', 'shrekAttempts'], (result) => {
   // Восстанавливаем состояние после «засыпания» worker'а
   state.currentPollId = result.currentPollId || null;
   state.lastResultsId = result.lastResultsId || null;
   state.resultsShown = !!result.resultsShown;
   state.shownShrekIds = Array.isArray(result.shownShrekIds) ? result.shownShrekIds : [];
   state.shrekAttempts = result.shrekAttempts && typeof result.shrekAttempts === 'object' ? result.shrekAttempts : {};
+  TOKEN = String(result.serverToken || '').trim();
   
   if (result.serverIP) {
     SERVER_URL = normalizeServerURL(result.serverIP);
@@ -531,11 +569,22 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'checkShrek') checkShrek();
 });
 
-// При активации вкладки
-chrome.tabs.onActivated.addListener(() => {
+// При активации вкладки проверяем всё сразу.
+// Разрешение "tabs" не запрашиваем ради одного события: без него
+// chrome.tabs.onActivated падал бы с TypeError и ломал весь worker.
+// Вместо этого — события «браузер запустился» и «расширение установлено/обновлено».
+chrome.runtime.onStartup.addListener(wakeCheck);
+chrome.runtime.onInstalled.addListener(wakeCheck);
+
+function wakeCheck() {
   checkPoll();
   checkResults();
   checkShrek();
+}
+
+// Попап при открытии шлёт ping — проверяем всё сразу, не дожидаясь аларма
+chrome.runtime.onMessage.addListener((request) => {
+  if (request && request.action === 'ping') wakeCheck();
 });
 
 console.log('✅ Background готов!');

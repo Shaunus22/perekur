@@ -5,14 +5,25 @@ const title = params.get('title') || '👹 ШРЕК УЖЕ ИДЕТ!';
 const gif = document.getElementById('gif');
 const sender = document.getElementById('sender');
 
-gif.src = img;
+// Если адрес картинки не пришёл — не грузим мусорный URL "null"
+if (img) gif.src = img;
 sender.textContent = title;
 document.title = title;
 
-const close = () => window.close();
+// Плавный уход: сначала анимация, потом закрытие окна
+let closed = false;
+const close = () => {
+  if (closed) return;
+  closed = true;
+  document.body.classList.add('leaving');
+  setTimeout(() => window.close(), 200);
+};
 document.getElementById('hint').addEventListener('click', close);
 gif.addEventListener('click', close);
 sender.addEventListener('click', close);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') close();
+});
 
 // Авто-закрытие через 12 секунд — окно не должно висеть вечно
 setTimeout(close, 12000);

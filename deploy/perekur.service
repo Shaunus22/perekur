@@ -10,6 +10,17 @@ ExecStart=/usr/bin/node server.js
 Restart=always
 RestartSec=5
 Environment=NODE_ENV=production
+# Токен доступа — НЕОБЯЗАТЕЛЕН.
+# Без этой строки сервер открыт всем, как раньше (настройки расширения
+# менять не нужно). Раскомментируйте, только если хотите закрыть сервер:
+# Environment=PEREKUR_TOKEN=ВАШ_СЛУЧАЙНЫЙ_ТОКЕН
+# Сгенерировать: openssl rand -hex 24
+# Тот же токен вводится в настройках расширения у каждого коллеги.
+# Белый список источников (необязательно). Помимо них всегда разрешены
+# chrome-extension://*. Хосты без Origin (curl, healthcheck) проходят.
+# Environment=PEREKUR_ALLOWED_ORIGINS=https://perekur.example.duckdns.org
+# Куда сохранять активный опрос и итоги (по умолчанию /opt/perekur/state.json)
+# Environment=PEREKUR_STATE_FILE=/opt/perekur/state.json
 
 [Install]
 WantedBy=multi-user.target
