@@ -1,6 +1,5 @@
 document.addEventListener('DOMContentLoaded', function() {
   const callBtn = document.getElementById('callBtn');
-  const shrekBtn = document.getElementById('shrekBtn');
   const statusDiv = document.getElementById('status');
   const nameInput = document.getElementById('name');
   const serverIPInput = document.getElementById('serverIP');
@@ -60,7 +59,16 @@ document.addEventListener('DOMContentLoaded', function() {
     clientsOpen = !clientsOpen;
     clientsList.classList.toggle('hidden', !clientsOpen);
     onlineHead.classList.toggle('open', clientsOpen);
+    onlineHead.setAttribute('aria-expanded', String(clientsOpen));
     if (clientsOpen) loadOnlineList();
+  });
+
+  // Клавиатура: строка «в сети» должна открываться с Enter/Пробела
+  onlineHead.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onlineHead.click();
+    }
   });
 
   function loadOnlineList() {
@@ -246,6 +254,7 @@ document.addEventListener('DOMContentLoaded', function() {
   function checkForUpdates() {
     const repo = getRepo();
     checkBtn.disabled = true;
+    checkBtn.classList.add('spin');
     updateStatusDiv.textContent = 'Проверяем обновления...';
     updateStatusDiv.className = '';
 
@@ -269,6 +278,7 @@ document.addEventListener('DOMContentLoaded', function() {
       })
       .finally(() => {
         checkBtn.disabled = false;
+        checkBtn.classList.remove('spin');
       });
   }
 
@@ -402,21 +412,35 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
 
-  shrekBtn.addEventListener('click', sendShrek);
+  // Клик по иконке шрека в заголовке отправляет шрека коллегам
   document.getElementById('shrekImg').addEventListener('click', sendShrek);
 
   // ---------- Периодическое обновление ----------
 
-  setInterval(function() {
+  // Пока попап закрыт, интервал не нужен: браузер его усыпляет, а при
+  // открытии попапа всё и так проверяется заново при загрузке.
+  // Останавливаем явно — иначе таймеры копятся у каждого открытия.
+  const statusTimer = setInterval(function() {
     checkStatus();
     // Пока список раскрыт, подтягиваем имена — кто-то мог зайти/выйти
     if (clientsOpen) loadOnlineList();
   }, 10000);
+  window.addEventListener('pagehide', function () {
+    clearInterval(statusTimer);
+    if (statusResetTimer) clearTimeout(statusResetTimer);
+  });
 
   // ---------- Модалка итогов ----------
   // Показываем, если фон записал новые результаты, пока попап был закрыт.
   const resultsModal = document.getElementById('resultsModal');
   document.getElementById('resultsClose').addEventListener('click', closeResults);
+  // Esc закрывает итоги — привычное поведение для модалок
+  resultsModal.addEventListener('click', function (e) {
+    if (e.target === resultsModal) closeResults();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && resultsModalOpen) closeResults();
+  });
 
   function closeResults() {
     resultsModal.classList.remove('open');
