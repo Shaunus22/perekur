@@ -85,9 +85,17 @@ function registerClient() {
       })
       .then(() => {
         console.log('✅ Зарегистрирован');
-        checkPoll();
-        checkResults();
-        checkShrek();
+        // Проверки после регистрации шлём только если долгий запрос почему-то
+        // не стартовал — иначе тройка запросов скачет зря.
+
+        // Регистрация завершена — можно открывать долгий запрос
+        const wasRunning = waitLoopRunning;
+        startWaitLoop();
+        if (!wasRunning) {
+          checkPoll();
+          checkResults();
+          checkShrek();
+        }
       })
       .catch(() => console.log('⚠️ Сервер недоступен'));
     });
@@ -523,6 +531,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (ip) {
       SERVER_URL = normalizeServerURL(ip);
       console.log(`🔌 Сервер изменен: ${SERVER_URL}`);
+      // Адрес сменился — старый долгий запрос висит на прежнем сервере
+      stopWaitLoop();
     }
     if (token !== undefined) {
       TOKEN = String(token || '').trim();
@@ -558,16 +568,105 @@ chrome.storage.local.get(['serverIP', 'serverToken', 'currentPollId', 'lastResul
   }
 });
 
-// Проверка опроса каждые 30 секунд (chrome.alarms - надежный способ для MV3)
-chrome.alarms.create('checkPoll', { periodInMinutes: 0.5 });
-chrome.alarms.create('checkResults', { periodInMinutes: 0.5 });
-chrome.alarms.create('checkShrek', { periodInMinutes: 0.5 });
+// Страховочные алармы. Основная доставка идёт через /wait (ниже), поэтому
+// алармы нужны только на случай, если долгий запрос оборвался и почему-то
+// не переподключился. 30 секунд здесь были бы лишним трафиком: 6 запросов
+// в минуту впустую. Пять минут — достаточно, чтобы «застрявший» клиент
+// всё равно получил новости.
+chrome.alarms.create('checkPoll', { periodInMinutes: 5 });
+chrome.alarms.create('checkResults', { periodInMinutes: 5 });
+chrome.alarms.create('checkShrek', { periodInMinutes: 5 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'checkPoll') checkPoll();
   if (alarm.name === 'checkResults') checkResults();
   if (alarm.name === 'checkShrek') checkShrek();
+  // Будит «спящий» клиент — заодно проверяем, жив ли долгий запрос
+  startWaitLoop();
 });
+
+// ============================================
+// 10. Мгновенная доставка (долгий запрос /wait)
+// ============================================
+// Алармы выше — страховка. Основной канал — этот цикл: держим запрос
+// открытым, сервер отвечает сразу, как только появился шрек/опрос/итоги.
+// Так сообщение приходит за доли секунды вместо 30 секунд.
+//
+// Важно: пока идёт fetch, service worker не засыпает, поэтому цикл
+// живёт всё время работы браузера. Если соединение оборвалось
+// (сервер перезапустили, пропал интернет) — ждём и пробуем снова.
+let waitLoopRunning = false;
+let waitAbort = null;
+
+function startWaitLoop() {
+  if (waitLoopRunning) return;
+  if (!SERVER_URL || !clientId) return;
+  waitLoopRunning = true;
+  waitOnce();
+}
+
+function stopWaitLoop() {
+  waitLoopRunning = false;
+  if (waitAbort) {
+    try { waitAbort.abort(); } catch (e) { /* уже завершён */ }
+    waitAbort = null;
+  }
+}
+
+function waitOnce() {
+  if (!waitLoopRunning) return;
+  if (!SERVER_URL || !clientId) {
+    waitLoopRunning = false;
+    return;
+  }
+
+  const controller = new AbortController();
+  waitAbort = controller;
+  // Своя страховка: сервер держит запрос до 2 минут, даём ещё запас
+  const guard = setTimeout(() => {
+    try { controller.abort(); } catch (e) {}
+  }, 150000);
+
+  fetch(`${SERVER_URL}/wait`, {
+    method: 'POST',
+    headers: headers(),
+    // idle: просим сервер держать запрос до 2 минут. Пока ничего не
+    // происходит — ни одного лишнего запроса, только само соединение.
+    body: JSON.stringify({ clientId: clientId, name: currentName, idle: true }),
+    signal: controller.signal
+  })
+    .then(r => r.json())
+    .then(data => {
+      clearTimeout(guard);
+      waitAbort = null;
+      if (!waitLoopRunning) return;
+      const reason = data && data.reason;
+      // 'idle' / 'timeout' / 'shutdown' — событий не было. Молча
+      // переподключаемся и НЕ дёргаем проверки: раньше здесь уходило
+      // три лишних запроса каждые 25 секунд.
+      if (reason && reason !== 'idle' && reason !== 'timeout' && reason !== 'shutdown') {
+        console.log('⚡ Событие по мгновенной доставке:', reason);
+        refreshFor(reason);
+      }
+      setTimeout(waitOnce, 0);
+    })
+    .catch(() => {
+      clearTimeout(guard);
+      waitAbort = null;
+      if (!waitLoopRunning) return;
+      // Сервер недоступен: сначала быстрый повтор, потом реже
+      setTimeout(waitOnce, 5000);
+    });
+}
+
+// Обновляем только то, что относится к событию: если пришёл шрек,
+// незачем спрашивать заново про опрос и итоги.
+function refreshFor(reason) {
+  if (reason === 'shrek') checkShrek();
+  else if (reason.startsWith && reason.startsWith('poll')) checkPoll();
+  else if (reason === 'results') checkResults();
+  else wakeCheck();
+}
 
 // При активации вкладки проверяем всё сразу.
 // Разрешение "tabs" не запрашиваем ради одного события: без него
@@ -580,6 +679,8 @@ function wakeCheck() {
   checkPoll();
   checkResults();
   checkShrek();
+  // Если долгий запрос не идёт (первый запуск, сервер поднялся) — запускаем
+  startWaitLoop();
 }
 
 // Попап при открытии шлёт ping — проверяем всё сразу, не дожидаясь аларма

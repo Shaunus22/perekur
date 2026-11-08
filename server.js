@@ -8,6 +8,42 @@ let activePoll = null;
 let shreks = []; // очередь всех отправленных шреков, чтобы ни один не потерялся
 
 // ============================================
+// Мгновенная доставка (long-poll)
+// ============================================
+// Раньше клиент проверял сервер раз в 30 секунд — шрек или призыв могли
+// опоздать на полминуты. Теперь клиент держит запрос открытым: сервер сам
+// отвечает, как только появилось событие (новый шрек, опрос, итоги).
+// Если событий нет, запрос возвращается пустым через WAIT_MS — клиент
+// тут же переоткрывает его.
+const WAIT_MS = 25000; // сколько держим запрос, если ничего не произошло
+// Тихий режим: клиент просит держать запрос дольше. Ответ по таймауту тогда
+// содержит reason "idle", и клиент молча переподключается, ничего не запрашивая.
+const WAIT_LONG_MS = 120000;
+const waiters = new Set(); // { res, clientId }
+
+function notifyWaiters(reason) {
+    if (!waiters.size) return;
+    console.log(`⚡ Мгновенная доставка: будим ${waiters.size} клиент(ов) — ${reason}`);
+    for (const w of Array.from(waiters)) {
+        waiters.delete(w);
+        clearTimeout(w.timer);
+        finishWait(w, reason);
+    }
+}
+
+function finishWait(waiter, reason) {
+    if (waiter.done) return;
+    waiter.done = true;
+    try {
+        waiter.res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        waiter.res.end(JSON.stringify({ ok: true, reason: reason }));
+    } catch (e) {
+        // клиент уже отключился — не страшно
+    }
+}
+
+
+// ============================================
 // Доступ: общий токен + белый список Origin
 // ============================================
 // Токен НЕОБЯЗАТЕЛЕН. Если PEREKUR_TOKEN не задан, сервер ведёт себя как
@@ -267,6 +303,10 @@ function endPoll() {
     console.log(`❌ ПРОТИВ (${noCount}): ${noVoters.join(', ') || 'никого'}`);
     console.log(`📊 Проголосовало: ${activePoll.voters.length} из ${clients.length}`);
     console.log('========================================');
+
+    // Будим всех, кто ждёт новостей долгим запросом — итоги должны
+    // прийти сразу, а не через полминуты.
+    notifyWaiters('results');
 }
 
 // ============================================
@@ -457,6 +497,9 @@ function handle(req, res) {
                 console.log(`👥 Клиентов в сети: ${onlineOthers}`);
                 console.log('========================================');
                 saveStateSoon();
+
+                // Будим ожидающих: призыв должен появиться сразу у всех
+                notifyWaiters(cancelledNow ? 'poll-cancelled' : 'poll');
                 
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ 
@@ -701,6 +744,8 @@ function handle(req, res) {
                 if (shreks.length > 50) shreks.shift();
                 saveStateSoon();
                 console.log('🟢 ШРЕК ОТПРАВЛЕН! От: ' + shrek.sender + ' | Всего в очереди: ' + shreks.length);
+                // Мгновенная доставка: ожидающие клиенты получают ответ прямо сейчас
+                notifyWaiters('shrek');
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ success: true }));
             } catch (e) {
@@ -740,6 +785,55 @@ function handle(req, res) {
                 res.writeHead(400);
                 res.end(JSON.stringify({ shreks: [] }));
             }
+        });
+        return;
+    }
+
+    // ==========================================
+    // 9.4. ДОЛГИЙ ЗАПРОС: «сообщи, когда что-то появится»
+    // ==========================================
+    // Клиент открывает этот запрос и ждёт. Сервер держит его до 25 секунд
+    // и отвечает раньше, если отправлен шрек, создан опрос или готовы итоги.
+    // Так события доходят за доли секунды вместо 30-секундного опроса.
+    if (req.method === 'POST' && req.url === '/wait') {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => {
+            let clientId = 'unknown';
+            let name = null;
+            let idle = false; // «тихий» режим: обрывы по таймауту не считаются событием
+            try {
+                const data = JSON.parse(body || '{}');
+                clientId = data.clientId || 'unknown';
+                name = data.name || null;
+                idle = data.idle === true;
+            } catch (e) { /* пустое тело — не критично */ }
+
+            upsertClient(clientId, name, getClientIP(req));
+
+            const waiter = { res, clientId, done: false, timer: null, idle };
+            waiters.add(waiter);
+
+            // Потолок ожидания: даже если ничего не случилось, отвечаем —
+            // клиент тут же переоткроет запрос. В тихом режиме держим дольше,
+            // чтобы не переподключаться каждые 25 секунд без причины.
+            const budget = idle ? WAIT_LONG_MS : WAIT_MS;
+            waiter.timer = setTimeout(() => {
+                waiters.delete(waiter);
+                finishWait(waiter, idle ? 'idle' : 'timeout');
+            }, budget);
+
+            // Клиент закрыл вкладку / браузер — убираем его из ожидающих,
+            // иначе будильник будет писать в мёртвый ответ.
+            // ВАЖНО: проверяем именно соединение (res), а не req. Событие
+            // 'close' на req в Node срабатывает, когда тело запроса дочитано,
+            // то есть сразу же — и тогда клиент никогда не дождался бы ответа.
+            const drop = () => {
+                clearTimeout(waiter.timer);
+                waiters.delete(waiter);
+                waiter.done = true;
+            };
+            res.on('close', drop);
         });
         return;
     }
@@ -890,10 +984,15 @@ process.on('SIGINT', () => {
     saveStateNow();
     console.log('\n👋 Сервер остановлен');
     process.exit();
-});
-
-process.on('SIGTERM', () => {
+});process.on('SIGTERM', () => {
     saveStateNow();
+    // Долгие запросы не должны держать соединения при остановке —
+    // отвечаем им сразу, иначе systemd будет ждать их до истечения таймаута.
+    for (const w of Array.from(waiters)) {
+        waiters.delete(w);
+        clearTimeout(w.timer);
+        finishWait(w, 'shutdown');
+    }
     process.exit();
 });
 
