@@ -246,6 +246,24 @@ function upsertClient(clientId, name, ip) {
     return newClient;
 }
 
+// Кто сейчас реально онлайн: был активен недавно, либо держит долгий
+// запрос /wait, либо держал его только что (переподключается).
+// ВАЖНО: clients хранит всех, кто заходил за последние 10 минут, поэтому
+// clients.length — это НЕ число онлайн-людей, и показывать его как
+// «проголосовало 2 из 5» нельзя.
+function isClientOnline(client) {
+    if (!client) return false;
+    if (Date.now() - client.lastSeen <= ONLINE_MS) return true;
+    if (waiters.size) {
+        for (const w of waiters) if (w.clientId === client.id) return true;
+    }
+    return recentlyLongPolled(client.id);
+}
+
+function onlineClients() {
+    return clients.filter(isClientOnline);
+}
+
 function getRandomImage() {
     const images = [
         'https://cdn-icons-png.flaticon.com/512/3132/3132691.png',
@@ -319,12 +337,22 @@ function endPoll() {
     
     activePoll.ended = true;
     activePoll.endedAt = new Date().toISOString();
+    // Сколько людей должны были голосовать: отправитель + те, кто был в сети
+    // при создании опроса. Показывать clients.length нельзя — это все, кто
+    // заходил за 10 минут, включая ушедших.
+    const expected = Array.isArray(activePoll.expectedVoters) ? activePoll.expectedVoters : [];
+    const expectedTotal = new Set([...(activePoll.senderId ? [activePoll.senderId] : []), ...expected]).size;
+    const participants = Math.max(expectedTotal, activePoll.voters.length);
+
     activePoll.results = {
         resultsId: Date.now().toString() + '_' + Math.random().toString(36).slice(2, 6), // Уникальный ID для результатов
         yes: yesCount,
         no: noCount,
         total: activePoll.voters.length,
-        totalClients: clients.length,
+        // Количество участников этого опроса, а не «всех клиентов на сервере»
+        totalClients: participants,
+        expectedVoters: expected.length,
+        onlineAtEnd: onlineClients().length,
         yesVoters: yesVoters,
         noVoters: noVoters,
         timestamp: new Date().toISOString()
@@ -337,7 +365,8 @@ function endPoll() {
     console.log(`📢 Инициатор: ${activePoll.sender}`);
     console.log(`✅ ЗА (${yesCount}): ${yesVoters.join(', ') || 'никого'}`);
     console.log(`❌ ПРОТИВ (${noCount}): ${noVoters.join(', ') || 'никого'}`);
-    console.log(`📊 Проголосовало: ${activePoll.voters.length} из ${clients.length}`);
+    console.log(`📊 Проголосовало: ${activePoll.voters.length} из ${participants} участников` +
+                ` (онлайн сейчас: ${onlineClients().length}, всего в базе: ${clients.length})`);
     console.log('========================================');
 
     // Будим всех, кто ждёт новостей долгим запросом — итоги должны
@@ -426,7 +455,7 @@ function handle(req, res) {
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ 
                     success: true, 
-                    clientsCount: clients.length 
+                    clientsCount: onlineClients().length 
                 }));
             } catch (e) {
                 console.error('❌ Ошибка регистрации:', e);
@@ -441,10 +470,9 @@ function handle(req, res) {
     // 2. СПИСОК КЛИЕНТОВ
     // ==========================================
     if (req.method === 'GET' && req.url === '/clients') {
-        // Отдаём только тех, кто реально онлайн (90 секунд), иначе в списке
-        // всплывали бы люди, которые закрыли браузер, но недавно заходили.
-        const now = Date.now();
-        const online = clients.filter(c => now - c.lastSeen <= 90000);
+        // Отдаём только тех, кто реально онлайн, иначе в списке всплывали бы
+        // люди, которые закрыли браузер, но недавно заходили.
+        const online = onlineClients();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ 
             onlineCount: online.length,
@@ -557,7 +585,7 @@ function handle(req, res) {
                 res.end(JSON.stringify({ 
                     success: true, 
                     pollId: activePoll.id,
-                    clientsCount: clients.length,
+                    clientsCount: onlineOthers,
                     cancelled: cancelledNow,
                     cancelReason: cancelledNow ? activePoll.cancelReason : null
                 }));
@@ -680,14 +708,18 @@ function handle(req, res) {
                 const noCount = Object.values(activePoll.votes).filter(v => v === 'no').length;
                 const totalVoters = activePoll.voters.length;
                 
-                console.log(`📊 Проголосовало: ${totalVoters} из ${clients.length}`);
+                // «из N» — это участники опроса, а не все клиенты в базе сервера
+                const expectedList = Array.isArray(activePoll.expectedVoters) ? activePoll.expectedVoters : [];
+                const participants = new Set([...(activePoll.senderId ? [activePoll.senderId] : []), ...expectedList]).size;
+                
+                console.log(`📊 Проголосовало: ${totalVoters} из ${participants} участников`);
                 console.log(`📊 ЗА: ${yesCount}, ПРОТИВ: ${noCount}`);
                 
                 // Проверяем, все ли клиенты проголосовали (только те, кто был в сети при создании опроса)
-                const allVoted = activePoll.expectedVoters.length > 0 &&
-                    activePoll.expectedVoters.every(id => activePoll.voters.includes(id));
+                const allVoted = expectedList.length > 0 &&
+                    expectedList.every(id => activePoll.voters.includes(id));
                 
-                if (allVoted && clients.length > 0) {
+                if (allVoted) {
                     console.log('✅ ВСЕ ПРОГОЛОСОВАЛИ! Завершаем опрос');
                     endPoll();
                 }
@@ -695,7 +727,7 @@ function handle(req, res) {
                 res.end(JSON.stringify({ 
                     success: true,
                     votersCount: totalVoters,
-                    totalClients: clients.length,
+                    totalClients: participants,
                     allVoted: allVoted
                 }));
                 
@@ -792,9 +824,11 @@ function handle(req, res) {
         res.end(JSON.stringify({ 
             status: 'ok', 
             serverIP: getLocalIP(),
+            // clients — все, кто заходил за последние 10 минут (включая ушедших).
+            // Для «сколько людей сейчас» используйте onlineCount.
             clients: clients.length,
-            // Реально онлайн: активность за последние 90 секунд (клиенты пингуют раз в 30с)
-            onlineCount: clients.filter(c => Date.now() - c.lastSeen <= 90000).length,
+            onlineCount: onlineClients().length,
+            waiting: waiters.size,
             hasActivePoll: !!activePoll && !activePoll.ended,
             pollEnded: activePoll ? activePoll.ended : false
         }));

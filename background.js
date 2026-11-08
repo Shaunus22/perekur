@@ -276,12 +276,18 @@ function showResultsNotification(results, poll) {
   const yesVoters = (results.yesVoters || []).join(', ');
   const noVoters = (results.noVoters || []).join(', ');
   const total = results.total || 0;
-  const totalClients = results.totalClients || 0;
+  // totalClients — участники именно этого опроса, а не все, кто когда-либо
+  // заходил на сервер. Раньше здесь было «из 5» при двух людях в сети.
+  const totalClients = Math.max(results.totalClients || 0, total);
   
   let message = `✅ ${results.yes || 0} идут  ❌ ${results.no || 0} не идут\n`;
   if (yesVoters) message += `🟢 ${yesVoters}\n`;
   if (noVoters) message += `🔴 ${noVoters}\n`;
-  message += `Проголосовало: ${total} из ${totalClients}`;
+  if (totalClients > total) {
+    message += `Проголосовало: ${total} из ${totalClients} — ${totalClients - total} не ответили`;
+  } else {
+    message += `Проголосовали все: ${total}`;
+  }
   
   const id = 'results_' + (results.resultsId || Date.now());
   
