@@ -21,14 +21,42 @@ const WAIT_MS = 25000; // сколько держим запрос, если н�
 const WAIT_LONG_MS = 120000;
 const waiters = new Set(); // { res, clientId }
 
-function notifyWaiters(reason) {
+// Кто недавно держал долгий запрос. Нужно на случай, если клиент как раз
+// переподключается (ответ получен, новый запрос ещё не открыт) — в эту
+// долю секунды его lastSeen мог не обновиться, и сервер ошибочно считал
+// его офлайн. Так опрос не отменялся «в одиночку» при живом коллеге.
+const ONLINE_MS = 90000;
+const longPollSeen = new Map(); // clientId -> время последнего /wait
+
+function markLongPoll(clientId) {
+    if (!clientId || clientId === 'unknown') return;
+    longPollSeen.set(clientId, Date.now());
+    if (longPollSeen.size > 200) {
+        const cutoff = Date.now() - 5 * 60 * 1000;
+        for (const [id, ts] of longPollSeen) if (ts < cutoff) longPollSeen.delete(id);
+    }
+}
+
+function recentlyLongPolled(clientId) {
+    const ts = longPollSeen.get(clientId);
+    return !!ts && Date.now() - ts <= ONLINE_MS;
+}
+
+function notifyWaiters(reason, exceptClientId) {
     if (!waiters.size) return;
-    console.log(`⚡ Мгновенная доставка: будим ${waiters.size} клиент(ов) — ${reason}`);
+    let woken = 0;
     for (const w of Array.from(waiters)) {
+        // Отправителя не будим его же событием: он и так знает, что нажал.
+        // Раньше из-за этого у инициатора мгновенно всплывали «итоги»:
+        // будильник срабатывал от create-poll, и клиент сразу шёл
+        // в /get-results, забирая результаты предыдущего опроса.
+        if (exceptClientId && w.clientId === exceptClientId && reason !== 'results') continue;
         waiters.delete(w);
         clearTimeout(w.timer);
         finishWait(w, reason);
+        woken++;
     }
+    if (woken) console.log(`⚡ Мгновенная доставка: будим ${woken} клиент(ов) — ${reason}`);
 }
 
 function finishWait(waiter, reason) {
@@ -248,8 +276,13 @@ function archivePoll(poll) {
 }
 
 // Какой опрос показать клиенту: сначала текущий, потом архив — от свежих к старым.
-// Возвращает null, если клиент не голосовал и не был инициатором ни в одном из них.
-function findResultsFor(clientId) {
+// Возвращает null, если клиент не голосовал и не был инициатором ни в одном из них,
+// либо если итоги этого опроса клиент уже видел (seeResultsId или resultsShownTo).
+//
+// Раньше here отдавался просто самый свежий подходящий опрос из архива, и клиент
+// получал одни и те же итоги снова и снова — в том числе сразу после нажатия
+// «позвать на перекур», когда итоги прошлого опроса ещё лежали в архиве.
+function findResultsFor(clientId, seeResultsId) {
     const candidates = [];
     if (activePoll) candidates.push(activePoll);
     for (let i = finishedPolls.length - 1; i >= 0; i--) candidates.push(finishedPolls[i]);
@@ -257,6 +290,9 @@ function findResultsFor(clientId) {
     for (const poll of candidates) {
         if (!poll || !poll.ended || !poll.results) continue;
         if (poll.voters.indexOf(clientId) === -1 && poll.senderId !== clientId) continue;
+        // Эти итоги клиент уже получил — не повторяем.
+        if (seeResultsId && poll.results.resultsId === seeResultsId) continue;
+        if (Array.isArray(poll.resultsShownTo) && poll.resultsShownTo.indexOf(clientId) !== -1) continue;
         return poll;
     }
     return null;
@@ -305,7 +341,8 @@ function endPoll() {
     console.log('========================================');
 
     // Будим всех, кто ждёт новостей долгим запросом — итоги должны
-    // прийти сразу, а не через полминуты.
+    // прийти сразу, а не через полминуты. Здесь будим и инициатора:
+    // это уже именно ЭТОТ опрос, а не результаты прошлого.
     notifyWaiters('results');
 }
 
@@ -457,15 +494,29 @@ function handle(req, res) {
                     console.log(`✅ Отправитель проголосовал ЗА`);
                 }
                 
-                // Запоминаем, кто должен проголосовать (клиенты на момент создания опроса)
+                // Запоминаем, кто должен проголосовать (клиенты на момент создания опроса).
+                // Только тех, кто реально онлайн — иначе опрос ждал бы «мертвых» клиентов,
+                // которые закрыли браузер, и итоги висели бы до 2-минутного таймаута.
+                const waiterIdsForExpected = new Set(Array.from(waiters).map(w => w.clientId));
                 activePoll.expectedVoters = clients
                     .filter(c => c.id !== data.senderId)
+                    .filter(c => Date.now() - c.lastSeen <= ONLINE_MS ||
+                                 waiterIdsForExpected.has(c.id) ||
+                                 recentlyLongPolled(c.id))
                     .map(c => c.id);
 
-                // Если в опросе только сам отправитель (больше никого онлайн) — отменяем голосование
+                // Если в опросе только сам отправитель (больше никого онлайн) — отменяем голосование.
+                //
+                // Раньше отмена срабатывала и тогда, когда у коллеги висел долгий
+                // запрос /wait, но его lastSeen ещё не обновился. Теперь «в сети»
+                // считается ещё и любой ожидающий в /wait — он заведомо онлайн.
+                const waiterIds = new Set(Array.from(waiters).map(w => w.clientId));
+                const isOnline = (c) =>
+                    Date.now() - c.lastSeen <= ONLINE_MS ||
+                    waiterIds.has(c.id) ||
+                    recentlyLongPolled(c.id);
                 const onlineOthers = clients.filter(c =>
-                    c.id !== activePoll.senderId &&
-                    Date.now() - c.lastSeen <= 90000
+                    c.id !== activePoll.senderId && isOnline(c)
                 ).length;
 
                 // Не отменяем дважды: выше мог сработать endPoll() и уже выставить итоги
@@ -498,8 +549,9 @@ function handle(req, res) {
                 console.log('========================================');
                 saveStateSoon();
 
-                // Будим ожидающих: призыв должен появиться сразу у всех
-                notifyWaiters(cancelledNow ? 'poll-cancelled' : 'poll');
+                // Будим ожидающих: призыв должен появиться сразу у всех.
+                // Отправителя не будим — иначе он забирал итоги прошлого опроса.
+                notifyWaiters(cancelledNow ? 'poll-cancelled' : 'poll', data.senderId);
                 
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ 
@@ -666,13 +718,30 @@ function handle(req, res) {
             try {
                 const data = JSON.parse(body);
                 const clientId = data.clientId || 'unknown';
+                const seeResultsId = data.seeResultsId || null;
+                const ackResultsId = data.ackResultsId || null;
                 
                 upsertClient(clientId, data.name, getClientIP(req));
-                
+
+                // Клиент подтверждает, что показал итоги — больше их не отдаём ему.
+                // Раньше сервер считал итоги «новыми» всегда, и клиент получал
+                // одни и те же цифры при каждой проверке.
+                if (ackResultsId) {
+                    const all = [activePoll, ...finishedPolls];
+                    const acked = all.find(p => p && p.results && p.results.resultsId === ackResultsId);
+                    if (acked) {
+                        if (!Array.isArray(acked.resultsShownTo)) acked.resultsShownTo = [];
+                        if (acked.resultsShownTo.indexOf(clientId) === -1) {
+                            acked.resultsShownTo.push(clientId);
+                            saveStateSoon();
+                        }
+                    }
+                }
+
                 // Ищем самый свежий завершённый опрос, к которому у клиента есть отношение
-                // (голосовал или сам создавал). Архив спасает, когда клиент опоздал
-                // или активный опрос уже перезаписан новым.
-                const poll = findResultsFor(clientId);
+                // (голосовал или сам создавал) и итоги которого он ещё не видел.
+                // Архив спасает, когда клиент опоздал или активный опрос уже перезаписан новым.
+                const poll = findResultsFor(clientId, seeResultsId);
                 
                 if (!poll) {
                     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -682,6 +751,14 @@ function handle(req, res) {
                 
                 const hasVoted = poll.voters.indexOf(clientId) !== -1;
                 const isSender = poll.senderId === clientId;
+
+                // Сразу отмечаем как выданные: клиент подтвердит повторно (ackResultsId),
+                // но это страхует от повторной выдачи, если подтверждение потерялось.
+                if (!Array.isArray(poll.resultsShownTo)) poll.resultsShownTo = [];
+                if (poll.resultsShownTo.indexOf(clientId) === -1) {
+                    poll.resultsShownTo.push(clientId);
+                    saveStateSoon();
+                }
                 
                 // Опрос завершен - отправляем результаты
                 res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -810,6 +887,9 @@ function handle(req, res) {
             } catch (e) { /* пустое тело — не критично */ }
 
             upsertClient(clientId, name, getClientIP(req));
+            // Клиент, который держит долгий запрос, точно в сети — запоминаем
+            // это отдельно от lastSeen, чтобы опросы не отменялись «в одиночку».
+            markLongPoll(clientId);
 
             const waiter = { res, clientId, done: false, timer: null, idle };
             waiters.add(waiter);

@@ -165,11 +165,20 @@ function checkPoll() {
 function checkResults() {
   if (!clientId) return;
   if (!SERVER_URL) return;
+
+  // Только что создали опрос — итоги предыдущего голосования не показываем:
+  // иначе у инициатора сразу после нажатия всплывала модалка со старыми цифрами.
+  if (state.ignoreResultsUntil && Date.now() < state.ignoreResultsUntil) {
+    console.log('⏭️ Пропускаем итоги: только что создан новый опрос');
+    return;
+  }
   
   fetch(`${SERVER_URL}/get-results`, {
     method: 'POST',
     headers: headers(),
-    body: JSON.stringify({ clientId: clientId, name: currentName })
+    // seeResultsId — какие итоги клиент уже показал. Без него сервер
+    // каждый раз отдавал один и тот же старый опрос из архива.
+    body: JSON.stringify({ clientId: clientId, name: currentName, seeResultsId: state.lastResultsId })
   })
   .then(r => r.json())
   .then(data => {
@@ -488,6 +497,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     .then(r => r.json())
     .then(data => {
       console.log('✅ Опрос создан!');
+      // Итоги прошлого опроса могли остаться неубранными — отмечаем их
+      // как просмотренные, иначе они всплывут модалкой сразу после создания.
+      chrome.storage.local.remove(['pendingResults', 'pendingResultsPoll']);
+      chrome.storage.local.set({ pendingResultsShown: true });
+      // Метка: пока этот опрос идёт, не забираем итоги, чтобы «свежие» цифры
+      // от предыдущего голосования не выглядели как итог только что созданного.
+      state.ignoreResultsUntil = Date.now() + 3000;
+      saveState();
       // cancelled/cancelReason важны: сервер отменяет опрос, если кроме
       // отправителя в сети никого нет, и попап должен сказать об этом.
       sendResponse({
