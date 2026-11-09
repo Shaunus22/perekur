@@ -784,11 +784,18 @@ function handle(req, res) {
                 const hasVoted = poll.voters.indexOf(clientId) !== -1;
                 const isSender = poll.senderId === clientId;
 
-                // Раньше здесь итоги сразу помечались как выданные этому клиенту.
-                // Если ответ терялся (network, перезапуск worker'а), клиент больше
-                // никогда их не получал — и инициатор видел итоги только после
-                // переоткрытия расширения. Теперь отметка ставится только по
-                // подтверждению (ackResultsId), когда клиент реально их сохранил.
+                // Помечаем итоги выданными сразу, но клиент дублирует защиту
+                // своим seenResultsIds. Двух защит нужно два, потому что
+                // бывают разные потери:
+                //  - ответ до сервера не дошёл → ack не сохранился → сервер
+                //    должен отдать ещё раз (клиент такой ответ отбросит);
+                //  - клиент потерял ack (перезапуск) → сервер уже помечен,
+                //    второй раз не выдаст (клиент не увидит дубль).
+                if (!Array.isArray(poll.resultsShownTo)) poll.resultsShownTo = [];
+                if (poll.resultsShownTo.indexOf(clientId) === -1) {
+                    poll.resultsShownTo.push(clientId);
+                    saveStateSoon();
+                }
                 
                 // Опрос завершен - отправляем результаты
                 res.writeHead(200, { 'Content-Type': 'application/json' });

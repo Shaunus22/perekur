@@ -20,6 +20,9 @@ let state = {
   currentPollId: null,
   lastResultsId: null,
   ackResultsId: null,
+  // Все resultsId, которые клиент уже показывал. Нужен, чтобы итоги
+  // не всплывали повторно при каждом открытии попапа или голосовании.
+  seenResultsIds: [],
   resultsShown: false,
   shownShrekIds: [],
   shrekAttempts: {} // { id шрека: сколько раз не удалось открыть окно }
@@ -228,21 +231,36 @@ function checkResults() {
   })
   .then(r => r.json())
   .then(data => {
-    if (data.results) {
-      // Проверяем, не показывали ли уже эти результаты
-      const resultsId = data.results.resultsId || data.results.timestamp || Date.now();
-      
-      if (state.resultsShown && state.lastResultsId === resultsId) {
-        console.log('⏭️ Результаты уже показаны, пропускаем');
-        return;
+    if (!data.results) return;
+
+    const resultsId = data.results.resultsId || data.results.timestamp || Date.now();
+
+    // Главная защита от «итоги всплывают повторно»: если этот опрос
+    // клиент уже показывал, второй раз модалку не открываем.
+    // Раньше проверялось только последнее seenId, и после голосования
+    // (когда флаг сбрасывался) старые итоги приходили снова.
+    if (Array.isArray(state.seenResultsIds) && state.seenResultsIds.indexOf(resultsId) !== -1) {
+      console.log('⏭️ Эти итоги уже показывались, пропускаем');
+      // На всякий случай повторяем подтверждение — вдруг прошлое не дошло.
+      if (state.ackResultsId !== resultsId) {
+        state.ackResultsId = resultsId;
+        saveState();
       }
-      
-      console.log('📊 Получены новые результаты!');
-      state.resultsShown = true;
-      state.lastResultsId = resultsId;
-      state.ackResultsId = resultsId;
-      state.currentPollId = null;
-      saveState();
+      return;
+    }
+
+    console.log('📊 Получены новые результаты!');
+    state.resultsShown = true;
+    state.lastResultsId = resultsId;
+    state.ackResultsId = resultsId;
+    state.currentPollId = null;
+    if (!Array.isArray(state.seenResultsIds)) state.seenResultsIds = [];
+    if (state.seenResultsIds.indexOf(resultsId) === -1) {
+      state.seenResultsIds.push(resultsId);
+      // Держим не больше 50 последних — больше не нужно.
+      if (state.seenResultsIds.length > 50) state.seenResultsIds = state.seenResultsIds.slice(-50);
+    }
+    saveState();
 
       // Кладём итоги в storage: если попап открыт — красиво покажет их в окне,
       // если закрыт — покажет при следующем открытии.
@@ -262,7 +280,6 @@ function checkResults() {
         // уведомление всё равно нужно показать — попап сам проверяет storage.
         showResultsNotification(data.results, data.poll);
       });
-    }
   })
   .catch(() => {});
 }
@@ -491,12 +508,11 @@ function sendVote(vote) {
   
   console.log('🗳️ Голос:', vote);
   
-  // Сбрасываем флаг результатов при голосовании, чтобы получить
-  // итоги именно этого опроса. ackResultsId тоже чистим — иначе сервер
-  // считал бы новый опрос уже подтверждённым и не отдавал его итоги.
+  // Сбрасываем флаг «показывать ли модалку» при голосовании, но НЕ
+  // забываем, какие итоги уже видели: это отдельный список
+  // seenResultsIds. Иначе сервер отдавал те же итоги повторно,
+  // и при открытии попапа модалка всплывала снова.
   state.resultsShown = false;
-  state.lastResultsId = null;
-  state.ackResultsId = null;
   saveState();
   
   fetch(`${SERVER_URL}/vote`, {
@@ -637,11 +653,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // ============================================
 // 9. Запуск
 // ============================================
-chrome.storage.local.get(['serverIP', 'serverToken', 'currentPollId', 'lastResultsId', 'ackResultsId', 'resultsShown', 'shownShrekIds', 'shrekAttempts'], (result) => {
+chrome.storage.local.get(['serverIP', 'serverToken', 'currentPollId', 'lastResultsId', 'ackResultsId', 'seenResultsIds', 'resultsShown', 'shownShrekIds', 'shrekAttempts'], (result) => {
   // Восстанавливаем состояние после «засыпания» worker'а
   state.currentPollId = result.currentPollId || null;
   state.lastResultsId = result.lastResultsId || null;
   state.ackResultsId = result.ackResultsId || null;
+  state.seenResultsIds = Array.isArray(result.seenResultsIds) ? result.seenResultsIds : [];
   state.resultsShown = !!result.resultsShown;
   state.shownShrekIds = Array.isArray(result.shownShrekIds) ? result.shownShrekIds : [];
   state.shrekAttempts = result.shrekAttempts && typeof result.shrekAttempts === 'object' ? result.shrekAttempts : {};
