@@ -19,6 +19,7 @@ const ICON_URL = chrome.runtime.getURL('icons/icon128.png');
 let state = {
   currentPollId: null,
   lastResultsId: null,
+  ackResultsId: null,
   resultsShown: false,
   shownShrekIds: [],
   shrekAttempts: {} // { id шрека: сколько раз не удалось открыть окно }
@@ -29,6 +30,14 @@ const SHREK_MAX_ATTEMPTS = 3;
 
 function saveState() {
   chrome.storage.local.set(state);
+}
+
+// Убирает прошлые итоги так, чтобы это гарантированно произошло раньше,
+// чем придут новые. Раньше удаление и установка флага делались вразнобой,
+// и «показано: true» могло затереть «показано: false» для настоящих итогов.
+function clearPendingResults() {
+  chrome.storage.local.remove(['pendingResults', 'pendingResultsPoll']);
+  chrome.storage.local.set({ pendingResultsShown: true });
 }
 
 // ============================================
@@ -202,20 +211,20 @@ function checkPoll() {
 function checkResults() {
   if (!clientId) return;
   if (!SERVER_URL) return;
-
-  // Только что создали опрос — итоги предыдущего голосования не показываем:
-  // иначе у инициатора сразу после нажатия всплывала модалка со старыми цифрами.
-  if (state.ignoreResultsUntil && Date.now() < state.ignoreResultsUntil) {
-    console.log('⏭️ Пропускаем итоги: только что создан новый опрос');
-    return;
-  }
   
   fetch(`${SERVER_URL}/get-results`, {
     method: 'POST',
     headers: headers(),
     // seeResultsId — какие итоги клиент уже показал. Без него сервер
     // каждый раз отдавал один и тот же старый опрос из архива.
-    body: JSON.stringify({ clientId: clientId, name: currentName, seeResultsId: state.lastResultsId })
+    // ackResultsId — итоги, которые показаны и сохранены: сервер по нему
+    // снимает их с очереди. Если ответ потерялся — вернёт снова.
+    body: JSON.stringify({
+      clientId: clientId,
+      name: currentName,
+      seeResultsId: state.lastResultsId,
+      ackResultsId: state.ackResultsId || null
+    })
   })
   .then(r => r.json())
   .then(data => {
@@ -231,6 +240,7 @@ function checkResults() {
       console.log('📊 Получены новые результаты!');
       state.resultsShown = true;
       state.lastResultsId = resultsId;
+      state.ackResultsId = resultsId;
       state.currentPollId = null;
       saveState();
 
@@ -481,9 +491,12 @@ function sendVote(vote) {
   
   console.log('🗳️ Голос:', vote);
   
-  // Сбрасываем флаг результатов при голосовании
+  // Сбрасываем флаг результатов при голосовании, чтобы получить
+  // итоги именно этого опроса. ackResultsId тоже чистим — иначе сервер
+  // считал бы новый опрос уже подтверждённым и не отдавал его итоги.
   state.resultsShown = false;
   state.lastResultsId = null;
+  state.ackResultsId = null;
   saveState();
   
   fetch(`${SERVER_URL}/vote`, {
@@ -527,6 +540,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // итоги старого опроса, в котором он голосовал.
     state.currentPollId = null;
     saveState();
+
+    // Очищаем прошлые итоги ДО запроса на сервер. Раньше здесь ставился
+    // pendingResultsShown: true уже после ответа сервера — и эта запись
+    // (асинхронная) могла лечь ПОСЛЕ того, как checkResults запишет
+    // pendingResultsShown: false для настоящих итогов. Флаг оставался
+    // «показано», и попап молчал: инициатор видел итоги только после
+    // перезапуска worker'а. Фиксируем порядок: чистка → создание опроса.
+    clearPendingResults();
     
     // Как и при отправке шрека: id берём из storage, а не из памяти —
     // иначе после «пробуждения» worker'а отправитель окажется без id,
@@ -546,14 +567,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     .then(r => r.json())
     .then(data => {
       console.log('✅ Опрос создан!');
-      // Итоги прошлого опроса могли остаться неубранными — отмечаем их
-      // как просмотренные, иначе они всплывут модалкой сразу после создания.
-      chrome.storage.local.remove(['pendingResults', 'pendingResultsPoll']);
-      chrome.storage.local.set({ pendingResultsShown: true });
-      // Метка: пока этот опрос идёт, не забираем итоги, чтобы «свежие» цифры
-      // от предыдущего голосования не выглядели как итог только что созданного.
-      state.ignoreResultsUntil = Date.now() + 3000;
-      saveState();
       // cancelled/cancelReason важны: сервер отменяет опрос, если кроме
       // отправителя в сети никого нет, и попап должен сказать об этом.
       sendResponse({
@@ -624,10 +637,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // ============================================
 // 9. Запуск
 // ============================================
-chrome.storage.local.get(['serverIP', 'serverToken', 'currentPollId', 'lastResultsId', 'resultsShown', 'shownShrekIds', 'shrekAttempts'], (result) => {
+chrome.storage.local.get(['serverIP', 'serverToken', 'currentPollId', 'lastResultsId', 'ackResultsId', 'resultsShown', 'shownShrekIds', 'shrekAttempts'], (result) => {
   // Восстанавливаем состояние после «засыпания» worker'а
   state.currentPollId = result.currentPollId || null;
   state.lastResultsId = result.lastResultsId || null;
+  state.ackResultsId = result.ackResultsId || null;
   state.resultsShown = !!result.resultsShown;
   state.shownShrekIds = Array.isArray(result.shownShrekIds) ? result.shownShrekIds : [];
   state.shrekAttempts = result.shrekAttempts && typeof result.shrekAttempts === 'object' ? result.shrekAttempts : {};

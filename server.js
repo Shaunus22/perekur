@@ -784,13 +784,11 @@ function handle(req, res) {
                 const hasVoted = poll.voters.indexOf(clientId) !== -1;
                 const isSender = poll.senderId === clientId;
 
-                // Сразу отмечаем как выданные: клиент подтвердит повторно (ackResultsId),
-                // но это страхует от повторной выдачи, если подтверждение потерялось.
-                if (!Array.isArray(poll.resultsShownTo)) poll.resultsShownTo = [];
-                if (poll.resultsShownTo.indexOf(clientId) === -1) {
-                    poll.resultsShownTo.push(clientId);
-                    saveStateSoon();
-                }
+                // Раньше здесь итоги сразу помечались как выданные этому клиенту.
+                // Если ответ терялся (network, перезапуск worker'а), клиент больше
+                // никогда их не получал — и инициатор видел итоги только после
+                // переоткрытия расширения. Теперь отметка ставится только по
+                // подтверждению (ackResultsId), когда клиент реально их сохранил.
                 
                 // Опрос завершен - отправляем результаты
                 res.writeHead(200, { 'Content-Type': 'application/json' });
