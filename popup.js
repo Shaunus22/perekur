@@ -415,6 +415,32 @@ document.addEventListener('DOMContentLoaded', function() {
   // Клик по иконке шрека в заголовке отправляет шрека коллегам
   document.getElementById('shrekImg').addEventListener('click', sendShrek);
 
+  // ---------- Проверка анимации ----------
+  // Открывает окно шрека с панелью диагностики: видно стиль, состояние
+  // системных анимаций и подсказку, если они отключены в Windows.
+  document.getElementById('animTestBtn').addEventListener('click', function() {
+    chrome.storage.local.get(['serverIP', 'serverToken'], function(result) {
+      const server = normalizeServerURL(result.serverIP || '');
+      if (!server) {
+        setStatus('❌ Сначала укажите адрес сервера', 'error');
+        return;
+      }
+      const token = String(result.serverToken || '').trim();
+      const imageUrl = server + '/shrek-image?t=' + Date.now() +
+        (token ? '&token=' + encodeURIComponent(token) : '');
+      // Стиль передаём случайный, diag=1 включает панель с причинами
+      const styles = ['rain', 'pixel', 'walk'];
+      const style = styles[Math.floor(Math.random() * styles.length)];
+      const url = 'shrek.html?img=' + encodeURIComponent(imageUrl) +
+        '&title=' + encodeURIComponent('Проверка анимации') +
+        '&style=' + style + '&diag=1';
+      chrome.windows.create({ url: url, type: 'popup', width: 420, height: 420, focused: true }, function() {
+        void chrome.runtime.lastError;
+        window.close();
+      });
+    });
+  });
+
   // ---------- Периодическое обновление ----------
 
   // Пока попап закрыт, интервал не нужен: браузер его усыпляет, а при

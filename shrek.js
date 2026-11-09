@@ -77,31 +77,121 @@ function spawnPixels() {
 // Анимация запускается по факту загрузки картинки, а не по факту
 // открытия окна: картинка с сервера может грузиться заметное время, и если
 // запустить анимацию сразу, она сыграет, пока окно ещё пустое.
+// Но если картинка «замерла» (полупустой ответ от сети), страховка в 3 сек
+// показывает окно раньше — и появление теряется. Поэтому старт ждём до 1.5 с,
+// а после этой границы не ждём загрузку вообще и показываем сразу.
+const START_DEADLINE_MS = 1500;
 let started = false;
 const startAnimation = () => {
   if (started) return;
   started = true;
 
-  gif.classList.add('is-ready');
+  // Красивое появление нужно только если картинка на месте. Если её нет
+  // (ошибка сети), то эффектно «влетает» пустота — лучше показать сразу.
+  const hasImage = gif.complete && gif.naturalWidth > 0;
+  if (hasImage) {
+    gif.classList.add('is-ready');
+  } else {
+    gif.style.opacity = '1';
+  }
   stage.classList.add('is-ready');
+
+  if (hasImage) {
+    // Отчёт в журнал (160 мс после старта — анимация уже должна двигаться).
+    // Панель &diag=1 показывает то же самое прямо в окне.
+    setTimeout(reportAnimation, 160);
+    if (params.get('diag') === '1') probeAnimation();
+  }
 
   if (style === 'rain') spawnShrekRain();
   if (style === 'pixel') spawnPixels();
 
   // «Шрек идёт»: после входа продолжает шагать на месте
-  if (style === 'walk') {
+  if (style === 'walk' && hasImage) {
     setTimeout(() => gif.classList.add('is-placed'), 1050);
   }
 };
 
+// Ждём кадр и смотрим: сколько анимаций на картинке и не замёрзли ли они.
+// Используется и для панели &diag=1, и для тихого отчёта в журнал сервера.
+function measureAnimation(cb) {
+  // Даём браузеру начать анимации: сразу после classList.add их ещё нет.
+  requestAnimationFrame(() => {
+    const anims = (typeof gif.getAnimations === 'function') ? gif.getAnimations() : [];
+    if (!anims.length) {
+      cb({ found: false, moved: 0, total: 0, names: [] });
+      return;
+    }
+    const names = anims.map(a => a.animationName || a.id || 'animation');
+    const before = anims.map(a => Number(a.currentTime));
+    // Сравниваем прогресс через 120 мс: если не сдвинулся — время анимации
+    // стоит (так бывает при отключённых анимациях в системе).
+    setTimeout(() => {
+      const moved = anims.filter((a, i) => Number(a.currentTime) !== before[i]).length;
+      cb({ found: true, moved: moved, total: anims.length, names: names });
+    }, 120);
+  });
+}
+
+// Тихий отчёт в журнал сервера — чтобы причину было видно без доступа к ПК.
+function reportAnimation() {
+  measureAnimation(r => {
+    if (!r.found) return reportEvent('❌ у появления картинки нет анимации');
+    if (!r.moved) return reportEvent('⚠️ появление не движется (система просит без движения)');
+    reportEvent('🎞️ появление: ' + r.names.join(', '));
+  });
+}
+
+function reportEvent(note) {
+  try {
+    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+      chrome.runtime.sendMessage({
+        action: 'shrekDiag',
+        data: { style: style, reducedMotion: reducedMotion, gpu: gpuRenderer, note: note }
+      }, () => { void chrome.runtime.lastError; });
+    }
+  } catch (e) { /* диагностика не должна ломать показ */ }
+}
+
+function probeAnimation() {
+  const box = document.getElementById('diag');
+  if (!box) return;
+  const add = (text, ok) => {
+    const d = document.createElement('div');
+    d.textContent = text;
+    if (!ok) d.className = 'warn';
+    box.appendChild(d);
+  };
+
+  const anims = (typeof gif.getAnimations === 'function') ? gif.getAnimations() : [];
+  if (!anims.length) {
+    add('появление: НЕТ анимации (сразу на месте)', false);
+    return;
+  }
+  add('появление: ' + anims.map(a => (a.animationName || a.id || 'animation')).join(', '), true);
+  measureAnimation(r => {
+    add('играет: ' + r.moved + ' из ' + r.total, r.moved === r.total);
+    if (!r.moved) add('→ анимация не движется: система просит без движения', false);
+  });
+}
+
 if (gif.complete && gif.naturalWidth) {
   startAnimation();
 } else {
+  // До границы ждём загрузку, чтобы анимировать уже готовую картинку
   gif.addEventListener('load', startAnimation, { once: true });
   // Если картинка не загрузилась — всё равно показываем окно, а не пустоту
   gif.addEventListener('error', startAnimation, { once: true });
   // Страховка: сеть могла подвиснуть — через 3 сек показываем что есть
   setTimeout(startAnimation, 3000);
+  // Если картинка к этому моменту ещё грузится — дальше уже ждать нечего:
+  // показываем окно сразу, а картинка дорисуется без анимации появления.
+  setTimeout(() => {
+    if (!started) {
+      gif.style.opacity = '1';
+      startAnimation();
+    }
+  }, START_DEADLINE_MS);
 }
 
 // ============================================
@@ -157,3 +247,74 @@ try {
   // центрирование — необязательный бонус, не ломаем из-за него ничего
   console.log('Не удалось отцентрировать окно:', e.message);
 }
+
+// ============================================
+// Диагностика: почему на некоторых ПК нет анимаций
+// ============================================
+// Самая частая причина — системная настройка «уменьшить движение»
+// (Windows: отключены анимации в параметрах специальных возможностей).
+// Тогда Chrome сообщает странице prefers-reduced-motion: reduce.
+// Раньше это гасило и появление — теперь нет, но проверить всё равно надо.
+const reducedMotion = window.matchMedia
+  ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  : false;
+
+// Без аппаратного ускорения Chrome рисует blur в CSS-фильтрах на CPU, и
+// появление «в расфокусе» может дёргаться или не проигрываться вовсе.
+// В таком случае берём вариант без blur: только transform и opacity.
+// Проверяем настоящую видеокарту: у софт-рендера рендерер просит
+// «SwiftShader» или «ANGLE (Software».
+const gpuRenderer = (() => {
+  try {
+    const c = document.createElement('canvas');
+    const gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+    if (!gl) return '';
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    return ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '') : '';
+  } catch (e) {
+    return '';
+  }
+})();
+const softwareRenderer = !gpuRenderer || /swiftshader|software|llvmpipe|basic render/i.test(gpuRenderer);
+if (softwareRenderer) document.documentElement.classList.add('no-blur');
+
+console.log('[перекур] стиль появления:', style,
+            '| уменьшить движение:', reducedMotion ? 'ВКЛ (система просит меньше анимаций)' : 'выкл',
+            '| видео:', gpuRenderer || 'нет',
+            '| разрешение:', window.screen.width + 'x' + window.screen.height);
+
+// Если открыто с &diag=1 — показываем причины прямо в окне.
+// Так на «проблемном» компьютере сразу видно, что чинить.
+const diagBox = document.getElementById('diag');
+if (diagBox && params.get('diag') === '1') {
+  diagBox.hidden = false;
+  diagBox.innerHTML = '';
+  const line = (text, warn) => {
+    const d = document.createElement('div');
+    d.textContent = text;
+    if (warn) d.className = 'warn';
+    diagBox.appendChild(d);
+    return d;
+  };
+  line('стиль: ' + style + (document.documentElement.classList.contains('no-blur') ? ' (без blur)' : ''));
+  line('анимации системы: ' + (reducedMotion ? 'отключены' : 'включены'),
+       reducedMotion);
+  line('видео: ' + (gpuRenderer || 'нет (софт-рендер)'), !gpuRenderer);
+  line('экран: ' + window.screen.width + ' x ' + window.screen.height);
+  line('размер окна: ' + window.innerWidth + ' x ' + window.innerHeight);
+  if (reducedMotion) {
+    line('→ Windows: Параметры → Специальные возможности →');
+    line('   Отображение → «Показывать анимации в Windows»: ВКЛ');
+    line('   (появление шрека работает и без этого)');
+  }
+}
+
+// Отчёт на сервер, чтобы причину было видно в журнале без доступа к ПК.
+try {
+  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+    chrome.runtime.sendMessage({
+      action: 'shrekDiag',
+      data: { style: style, reducedMotion: reducedMotion }
+    }, () => { void chrome.runtime.lastError; });
+  }
+} catch (e) { /* диагностика не должна ломать показ */ }

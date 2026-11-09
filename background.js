@@ -434,6 +434,8 @@ function showShrekNotification(shrek) {
   // поэтому показываем шрека в маленьком всплывающем окне, где GIF проигрывается.
   // cache-buster, чтобы каждая картинка была новой и не кэшировалась.
   // Токен передаём в query: <img> в shrek.html не может задать заголовок.
+  // preferOriginal=1 — берём исходный GIF, а не анимированный WebP: на части
+  // сборок Chrome (особенно на Windows 10) WebP показывает только первый кадр.
   const imageUrl = SERVER_URL + '/shrek-image?t=' + Date.now() +
     (TOKEN ? '&token=' + encodeURIComponent(TOKEN) : '');
   const title = shrek.sender + ' зовет на перекур!';
@@ -648,6 +650,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     registerClient();
     sendResponse({ ok: true });
   }
+  // Диагностика окна шрека: почему на некоторых ПК нет анимаций появления.
+  if (request.action === 'shrekDiag') {
+    const d = request.data || {};
+    const flags = [
+      'стиль: ' + (d.style || '?'),
+      d.reducedMotion ? 'система просит меньше анимаций' : 'анимации разрешены',
+      d.gpu ? 'видео: ' + d.gpu : 'видео: нет (софт-рендер)'
+    ].join(' | ');
+    reportEvent(d.note || '🎞️ окно шрека', flags);
+    sendResponse({ ok: true });
+    return false;
+  }
+  
 });
 
 // ============================================

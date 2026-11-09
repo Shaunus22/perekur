@@ -380,6 +380,26 @@
   .save-hint { font: 10px/1.4 var(--mono); color: var(--muted); }
   .save-hint::before { content: "// "; opacity: .6; }
 
+  /* Второстепенная кнопка (проверка анимации) */
+  .ghost {
+    margin-top: 10px;
+    width: 100%;
+    padding: 7px 10px;
+    font: 11px/1 var(--mono);
+    letter-spacing: .04em;
+    color: var(--cyan);
+    background: transparent;
+    border: 1px solid rgba(34, 224, 255, .35);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background .18s, border-color .18s, box-shadow .18s;
+  }
+  .ghost:hover {
+    background: rgba(34, 224, 255, .08);
+    border-color: var(--cyan);
+    box-shadow: 0 0 12px rgba(34, 224, 255, .25);
+  }
+
   /* ---------- Модалка итогов ---------- */
   .modal {
     position: fixed; inset: 0; z-index: 50;
@@ -499,6 +519,8 @@
         <div class="field-hint">Необязательно. Заполняйте, только если на сервере задан PEREKUR_TOKEN.</div>
       </div>
       <div class="save-hint">Изменения сохраняются автоматически.</div>
+      <button id="animTestBtn" class="ghost" type="button">Проверить анимацию шрека</button>
+      <div class="field-hint">Если анимации не видно — проверка покажет причину.</div>
     </div>
   </details>
 
