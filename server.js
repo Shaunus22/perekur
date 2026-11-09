@@ -844,6 +844,14 @@ function handle(req, res) {
         req.on('end', () => {
             try {
                 const data = JSON.parse(body);
+                // Без senderId сервер не смог бы отличить отправителя от получателя,
+                // и шрек вернулся бы тому же человеку. Такую отправку отклоняем.
+                if (!data.senderId) {
+                    console.log('⚠️ Шрек без senderId — отклоняем (некому адресовать)');
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: false, error: 'senderId is required' }));
+                    return;
+                }
                 const shrek = {
                     id: Date.now().toString() + '_' + Math.random().toString(36).slice(2, 7),
                     sender: data.sender || 'Кто-то',
@@ -855,8 +863,10 @@ function handle(req, res) {
                 if (shreks.length > 50) shreks.shift();
                 saveStateSoon();
                 console.log('🟢 ШРЕК ОТПРАВЛЕН! От: ' + shrek.sender + ' | Всего в очереди: ' + shreks.length);
-                // Мгновенная доставка: ожидающие клиенты получают ответ прямо сейчас
-                notifyWaiters('shrek');
+                // Мгновенная доставка: ожидающие клиенты получают ответ прямо сейчас.
+                // Отправителя не будим — он всё равно отфильтрует свой шрек по senderId,
+                // а лишнее пробуждение лишь тратит запрос.
+                notifyWaiters('shrek', shrek.senderId);
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ success: true }));
             } catch (e) {

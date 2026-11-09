@@ -71,6 +71,43 @@ function getClientId() {
 // ============================================
 // 2. Регистрация на сервере
 // ============================================
+// После «пробуждения» service worker'а переменные SERVER_URL и clientId
+// пустые. Ни одна функция доставки без них не работает, поэтому перед
+// подъёмом цикла гарантируем, что они восстановлены (из chrome.storage).
+let readyPromise = null;
+
+function ensureReady() {
+  // Если всё уже на месте — ничего не делаем и ничего не кэшируем.
+  if (SERVER_URL && clientId) return Promise.resolve();
+  if (readyPromise) return readyPromise;
+  readyPromise = new Promise((resolve) => {
+    chrome.storage.local.get(['serverIP'], (result) => {
+      if (!SERVER_URL && result.serverIP) {
+        SERVER_URL = normalizeServerURL(result.serverIP);
+      }
+      if (!SERVER_URL) {
+        readyPromise = null;
+        return resolve();
+      }
+      getClientId().then((id) => {
+        clientId = id;
+        // После восстановления кэш не держим: если worker снова заснёт,
+        // переменные обнулятся, и следующий вызов обязан перечитать storage.
+        readyPromise = null;
+        if (!currentName) {
+          chrome.storage.local.get(['clientName'], (r2) => {
+            currentName = r2.clientName || 'PC_' + id.slice(0, 6);
+            resolve();
+          });
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+  return readyPromise;
+}
+
 function registerClient() {
   if (!SERVER_URL) return;
   getClientId().then(id => {
@@ -491,14 +528,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     state.currentPollId = null;
     saveState();
     
-    fetch(`${SERVER_URL}/create-poll`, {
-      method: 'POST',
-      headers: headers(),
-      body: JSON.stringify({
-        sender: request.data.sender,
-        senderId: clientId,
-        message: request.data.message
-      })
+    // Как и при отправке шрека: id берём из storage, а не из памяти —
+    // иначе после «пробуждения» worker'а отправитель окажется без id,
+    // и сервер не сможет понять, что это его собственный опрос.
+    getClientId().then(id => {
+      clientId = id;
+      return fetch(`${SERVER_URL}/create-poll`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({
+          sender: request.data.sender,
+          senderId: id,
+          message: request.data.message
+        })
+      });
     })
     .then(r => r.json())
     .then(data => {
@@ -529,13 +572,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   
   // Отправка Шрека коллегам
   if (request.action === 'sendShrek') {
-    fetch(`${SERVER_URL}/send-shrek`, {
-      method: 'POST',
-      headers: headers(),
-      body: JSON.stringify({
-        sender: request.data.sender,
-        senderId: clientId
-      })
+    // senderId берём только из storage: переменная clientId в памяти
+    // service worker'а может быть null, если он только что проснулся
+    // (Chrome усыпляет worker и обнуляет всё). Именно из-за этого шрек
+    // уходил без senderId и сервер возвращал его же отправителю.
+    getClientId().then(id => {
+      clientId = id;
+      return fetch(`${SERVER_URL}/send-shrek`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({
+          sender: request.data.sender,
+          senderId: id
+        })
+      });
     })
     .then(r => r.json())
     .then(data => {
@@ -591,21 +641,36 @@ chrome.storage.local.get(['serverIP', 'serverToken', 'currentPollId', 'lastResul
   }
 });
 
-// Страховочные алармы. Основная доставка идёт через /wait (ниже), поэтому
-// алармы нужны только на случай, если долгий запрос оборвался и почему-то
-// не переподключился. 30 секунд здесь были бы лишним трафиком: 6 запросов
-// в минуту впустую. Пять минут — достаточно, чтобы «застрявший» клиент
-// всё равно получил новости.
+// Страховка на старте: даже если worker поднялся не через registerClient
+// (например, сразу после пробуждения), через минуту сторож поднимет цикл.
+
+// СТОРОЖ ДОСТАВКИ. Главная проблема: Chrome усыпляет service worker
+// даже с висящим fetch (особенно когда вкладка не в фокусе). После
+// пробуждения память чистая, waitLoopRunning = false — цикл обрывается,
+// и человек выпадает из онлайна, пока сам не откроет расширение.
+// Поэтому раз в минуту проверяем: жив ли цикл, и если нет — поднимаем.
+// Это не опрос сервера (никаких get-shrek/get-poll), а только подъём
+// самого долгого запроса, так что трафик почти не растёт.
+chrome.alarms.create('waitKeeper', { periodInMinutes: 1, delayInMinutes: 1 });
+
+// Редкие страховочные проверки на случай, если сигнал /wait потерялся.
 chrome.alarms.create('checkPoll', { periodInMinutes: 5 });
 chrome.alarms.create('checkResults', { periodInMinutes: 5 });
 chrome.alarms.create('checkShrek', { periodInMinutes: 5 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'waitKeeper') {
+    // Аларм разбудил worker — переменные могли обнулиться, восстанавливаем.
+    ensureReady().then(() => {
+      startWaitLoop();
+    });
+    return;
+  }
   if (alarm.name === 'checkPoll') checkPoll();
   if (alarm.name === 'checkResults') checkResults();
   if (alarm.name === 'checkShrek') checkShrek();
   // Будит «спящий» клиент — заодно проверяем, жив ли долгий запрос
-  startWaitLoop();
+  ensureReady().then(() => startWaitLoop());
 });
 
 // ============================================
@@ -623,7 +688,17 @@ let waitAbort = null;
 
 function startWaitLoop() {
   if (waitLoopRunning) return;
-  if (!SERVER_URL || !clientId) return;
+  if (!SERVER_URL || !clientId) {
+    // Worker только что проснулся — переменные обнулились.
+    // Восстанавливаем их и приходим сюда снова.
+    ensureReady().then(() => {
+      if (SERVER_URL && clientId && !waitLoopRunning) {
+        waitLoopRunning = true;
+        waitOnce();
+      }
+    });
+    return;
+  }
   waitLoopRunning = true;
   waitOnce();
 }
@@ -699,11 +774,14 @@ chrome.runtime.onStartup.addListener(wakeCheck);
 chrome.runtime.onInstalled.addListener(wakeCheck);
 
 function wakeCheck() {
-  checkPoll();
-  checkResults();
-  checkShrek();
-  // Если долгий запрос не идёт (первый запуск, сервер поднялся) — запускаем
-  startWaitLoop();
+  // После пробуждения worker'а переменные пусты — сначала восстанавливаем.
+  ensureReady().then(() => {
+    checkPoll();
+    checkResults();
+    checkShrek();
+    // Если долгий запрос не идёт (первый запуск, сервер поднялся) — запускаем
+    startWaitLoop();
+  });
 }
 
 // Попап при открытии шлёт ping — проверяем всё сразу, не дожидаясь аларма
