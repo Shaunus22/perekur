@@ -49,7 +49,14 @@ function clearPendingResults() {
 // По этому журналу на сервере видно, дошло ли сообщение до клиента
 // и что он с ним сделал — даже если человек не заметил.
 function reportEvent(event, detail) {
-  if (!SERVER_URL || !clientId) return;
+  // Журнал тоже переживает сон worker'а: именно по нему разбирают такие
+  // сбои, поэтому терять записи из-за пустого clientId нельзя.
+  if (!SERVER_URL || !clientId) {
+    ensureReady().then(() => {
+      if (SERVER_URL && clientId) reportEvent(event, detail);
+    });
+    return;
+  }
   fetch(`${SERVER_URL}/client-log`, {
     method: 'POST',
     headers: headers(),
@@ -517,8 +524,16 @@ chrome.notifications.onClicked.addListener((notificationId) => {
 });
 
 function sendVote(vote) {
-  if (!clientId) return;
-  if (!SERVER_URL) return;
+  // Голос приходит из уведомления, а уведомление висит часами — worker
+  // к этому времени почти наверняка спит, и clientId в памяти пуст.
+  // Раньше здесь стоял `if (!clientId) return`: нажатие на кнопку
+  // «Иду/Не иду» молча ничего не отправляло.
+  if (!clientId || !SERVER_URL) {
+    ensureReady().then(() => {
+      if (clientId && SERVER_URL) sendVote(vote);
+    });
+    return;
+  }
   
   console.log('🗳️ Голос:', vote);
   
