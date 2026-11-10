@@ -155,8 +155,12 @@ function registerClient() {
 // 3. Проверка опроса
 // ============================================
 function checkPoll() {
-  if (!clientId) return;
-  if (!SERVER_URL) return;
+  // Worker мог только что проснуться — тогда clientId пуст, и без этого
+  // функция молча выходила, ничего не запросив.
+  if (!clientId || !SERVER_URL) {
+    ensureReady().then(() => { if (clientId && SERVER_URL) checkPoll(); });
+    return;
+  }
   
   fetch(`${SERVER_URL}/get-poll`, {
     method: 'POST',
@@ -212,8 +216,12 @@ function checkPoll() {
 // 4. Проверка результатов
 // ============================================
 function checkResults() {
-  if (!clientId) return;
-  if (!SERVER_URL) return;
+  // Worker мог только что проснуться — тогда clientId пуст, и без этого
+  // функция молча выходила, ничего не запросив.
+  if (!clientId || !SERVER_URL) {
+    ensureReady().then(() => { if (clientId && SERVER_URL) checkResults(); });
+    return;
+  }
   
   fetch(`${SERVER_URL}/get-results`, {
     method: 'POST',
@@ -379,8 +387,12 @@ function showResultsNotification(results, poll) {
 // 7. Шрек
 // ============================================
 function checkShrek() {
-  if (!clientId) return;
-  if (!SERVER_URL) return;
+  // Worker мог только что проснуться — тогда clientId пуст, и без этого
+  // функция молча выходила, ничего не запросив.
+  if (!clientId || !SERVER_URL) {
+    ensureReady().then(() => { if (clientId && SERVER_URL) checkShrek(); });
+    return;
+  }
   
   fetch(`${SERVER_URL}/get-shrek`, {
     method: 'POST',
@@ -805,11 +817,18 @@ function waitOnce() {
 
 // Обновляем только то, что относится к событию: если пришёл шрек,
 // незачем спрашивать заново про опрос и итоги.
+// ВАЖНО: ensureReady() обязательно. Событие почти всегда приходит от /wait,
+// а /wait отвечает уже после того, как Chrome усыпил worker. При пробуждении
+// clientId и SERVER_URL пусты, и checkShrek() молча выходил по первой строке —
+// шрек доходил до сервера, будильник срабатывал, а запроса /get-shrek не было.
+// Именно поэтому шреки не появлялись, пока сторож не поднимал worker заново.
 function refreshFor(reason) {
-  if (reason === 'shrek') checkShrek();
-  else if (reason.startsWith && reason.startsWith('poll')) checkPoll();
-  else if (reason === 'results') checkResults();
-  else wakeCheck();
+  ensureReady().then(() => {
+    if (reason === 'shrek') checkShrek();
+    else if (reason.startsWith && reason.startsWith('poll')) checkPoll();
+    else if (reason === 'results') checkResults();
+    else wakeCheck();
+  });
 }
 
 // При активации вкладки проверяем всё сразу.
