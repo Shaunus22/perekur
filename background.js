@@ -717,14 +717,16 @@ chrome.storage.local.get(['serverIP', 'serverToken', 'currentPollId', 'lastResul
 // Страховка на старте: даже если worker поднялся не через registerClient
 // (например, сразу после пробуждения), через минуту сторож поднимет цикл.
 
-// СТОРОЖ ДОСТАВКИ. Главная проблема: Chrome усыпляет service worker
-// даже с висящим fetch (особенно когда вкладка не в фокусе). После
-// пробуждения память чистая, waitLoopRunning = false — цикл обрывается,
-// и человек выпадает из онлайна, пока сам не откроет расширение.
-// Поэтому раз в минуту проверяем: жив ли цикл, и если нет — поднимаем.
-// Это не опрос сервера (никаких get-shrek/get-poll), а только подъём
-// самого долгого запроса, так что трафик почти не растёт.
-chrome.alarms.create('waitKeeper', { periodInMinutes: 1, delayInMinutes: 1 });
+// СТОРОЖ ДОСТАВКИ. Chrome усыпляет service worker даже с висящим fetch
+// (особенно когда окно не в фокусе), и вместе с ним умирает соединение /wait.
+// На силе сна это не отражается: после пробуждения память чистая,
+// waitLoopRunning = false, и цикл сам не поднимется.
+//
+// Раньше здесь стояла 1 минута. Chrome 120+ разрешает от 30 секунд, но
+// нижнюю границу не гарантирует: если браузер старее, он всё равно
+// поднимет до минуты — хуже не будет, просто реже.
+const KEEPER_MINUTES = 0.5;
+chrome.alarms.create('waitKeeper', { periodInMinutes: KEEPER_MINUTES, delayInMinutes: 0.1 });
 
 // Редкие страховочные проверки на случай, если сигнал /wait потерялся.
 chrome.alarms.create('checkPoll', { periodInMinutes: 5 });
@@ -736,6 +738,10 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     // Аларм разбудил worker — переменные могли обнулиться, восстанавливаем.
     ensureReady().then(() => {
       startWaitLoop();
+      // Пока цикл был мёртв, события могли пройти мимо. Забираем их сразу,
+      // не дожидаясь «событийного» пробуждения: иначе шрек лежит в очереди
+      // до следующего аларма, а человек думает, что ничего не пришло.
+      checkShrek();
     });
     return;
   }
@@ -798,6 +804,19 @@ function waitOnce() {
     try { controller.abort(); } catch (e) {}
   }, 150000);
 
+  // Страховка на случай, когда Chrome усыпил worker во время запроса и
+  // промис так и не завершился: убеждаемся, что запрос ещё в полёте.
+  // Если он умер молча — перезапускаем цикл, не дожидаясь аларма.
+  // Раньше в этом случае доставка стояла до следующего сторожа (~до минуты).
+  // Живём 35 секунд: этого хватает на разрыв после сна, но таймер не
+  // держит worker бесконечно и не копится при перезапусках.
+  const watchdog = setInterval(() => {
+    if (!waitLoopRunning) { clearInterval(watchdog); return; }
+    if (waitAbort === controller) return; // этот запрос ещё жив
+    clearInterval(watchdog);
+    waitOnce();
+  }, 25000);
+
   fetch(`${SERVER_URL}/wait`, {
     method: 'POST',
     headers: headers(),
@@ -809,6 +828,7 @@ function waitOnce() {
     .then(r => r.json())
     .then(data => {
       clearTimeout(guard);
+      clearInterval(watchdog);
       waitAbort = null;
       if (!waitLoopRunning) return;
       const reason = data && data.reason;
@@ -823,6 +843,7 @@ function waitOnce() {
     })
     .catch(() => {
       clearTimeout(guard);
+      clearInterval(watchdog);
       waitAbort = null;
       if (!waitLoopRunning) return;
       // Сервер недоступен: сначала быстрый повтор, потом реже
